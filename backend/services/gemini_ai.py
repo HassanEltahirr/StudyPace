@@ -18,6 +18,8 @@ except Exception:
 
 # flash-lite: full flash takes 60s+ to write a 5-question set (past every
 # sensible request timeout) and has lower free-tier limits; lite does it in ~7s.
+# 2.5-pro is not an option here: it rejects thinkingBudget=0 (HTTP 400) and
+# can't finish a question set inside the request timeout anyway.
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
 GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
 
@@ -203,7 +205,7 @@ def _practice_call(
         "Keep each explanation under 80 words: state the key step and the common mistake, "
         "never a full line-by-line trace."
     )
-    raw = _generate(PRACTICE_SYSTEM_PROMPT, user, _env_float("GEMINI_PRACTICE_TIMEOUT_SECONDS", 7), json_mode=True)
+    raw = _generate(PRACTICE_SYSTEM_PROMPT, user, _env_float("GEMINI_PRACTICE_TIMEOUT_SECONDS", 18), json_mode=True)
     if not raw:
         return []
     return _parse_question_json(raw)

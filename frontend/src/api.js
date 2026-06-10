@@ -238,13 +238,13 @@ function clearPersistentApiCache(prefix = '') {
 
 export const api = {
   // Auth
-  authConfig: () => publicReq('GET', '/auth/config'),
+  authConfig: () => publicReq('GET', '/auth/config', null, { cacheMs: 3600000 }),
   login: (data) => publicReq('POST', '/auth/login', data),
   register: (data) => publicReq('POST', '/auth/register', data),
   forgotPassword: (data) => publicReq('POST', '/auth/forgot-password', data),
   resetPassword: (data) => publicReq('POST', '/auth/reset-password', data),
   googleLogin: (data) => publicReq('POST', '/auth/google', data),
-  me: () => req('GET', '/auth/me', null, { cacheMs: 30000 }),
+  me: () => req('GET', '/auth/me', null, { cacheMs: 120000 }),
 
   // Courses
   getCourses: () => req('GET', '/courses/', null, { cacheMs: 300000 }),
@@ -259,8 +259,8 @@ export const api = {
   deleteTopic: (id) => req('DELETE', `/topics/${id}`),
 
   // Daily plan
-  getTodayPlan: () => req('GET', '/plan/today'),
-  getPlanForDate: (d) => req('GET', `/plan/${d}`),
+  getTodayPlan: () => req('GET', '/plan/today', null, { cacheMs: 60000 }),
+  getPlanForDate: (d) => req('GET', `/plan/${d}`, null, { cacheMs: 60000 }),
   markDayOff: (d, reason) => req('POST', `/plan/day-off/${d}?reason=${encodeURIComponent(reason)}`),
   unmarkDayOff: (d) => req('DELETE', `/plan/day-off/${d}`),
 

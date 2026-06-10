@@ -15,7 +15,7 @@ from contextvars import ContextVar
 from functools import lru_cache
 from pathlib import Path
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, inspect, text, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import NoSuchTableError, OperationalError
 from sqlalchemy.pool import NullPool
@@ -46,6 +46,11 @@ def _base_engine_kwargs(url: str) -> dict:
         kwargs["poolclass"] = NullPool
     else:
         kwargs["pool_pre_ping"] = True
+        # Sync route handlers run in Starlette's 40-thread pool, each holding a
+        # session; the default pool (5+10) starves under concurrent load.
+        kwargs["pool_size"] = 10
+        kwargs["max_overflow"] = 30
+        kwargs["pool_recycle"] = 1800
     return kwargs
 
 
@@ -57,6 +62,19 @@ if IS_SQLITE:
 engine = create_engine(DATABASE_URL, **engine_kwargs)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+@event.listens_for(Engine, "connect")
+def _set_sqlite_pragma(dbapi_connection, connection_record):
+    if IS_SQLITE:
+        try:
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA busy_timeout=5000")
+            cursor.execute("PRAGMA cache_size=-64000")
+            cursor.close()
+        except Exception:
+            pass
 
 
 class Base(DeclarativeBase):

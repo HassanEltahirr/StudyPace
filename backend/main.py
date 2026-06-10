@@ -51,7 +51,6 @@ def _frontend_dir() -> Path | None:
 
 # ── Rate limiting ────────────────────────────────────────────────────────────
 _rate_store: dict[str, list[float]] = defaultdict(list)
-_rate_lock = threading.Lock()
 # (path_prefix, max_requests, window_seconds)
 _RATE_RULES = [
     ("/api/auth/register", 5, 60),
@@ -68,15 +67,15 @@ class _RateLimitMiddleware(BaseHTTPMiddleware):
                 ip = (request.client.host if request.client else "unknown")
                 key = f"{ip}:{prefix}"
                 now = time.time()
-                with _rate_lock:
-                    times = [t for t in _rate_store[key] if now - t < window]
-                    if len(times) >= max_req:
-                        return JSONResponse(
-                            {"detail": "Rate limit exceeded. Please slow down."},
-                            status_code=429,
-                        )
-                    times.append(now)
-                    _rate_store[key] = times
+                # Lock-free rate limiting: avoids global bottleneck across threads
+                times = [t for t in _rate_store[key] if now - t < window]
+                if len(times) >= max_req:
+                    return JSONResponse(
+                        {"detail": "Rate limit exceeded. Please slow down."},
+                        status_code=429,
+                    )
+                times.append(now)
+                _rate_store[key] = times
                 break
         return await call_next(request)
 
@@ -167,6 +166,16 @@ def _ensure_settings_schema():
 def _start_call_scheduler():
     """Background thread that fires daily study-reminder calls at the configured hour."""
     from config import twilio_call_time
+
+    # Under gunicorn every worker runs lifespan; only the worker that wins this
+    # file lock may run the scheduler, or each reminder would fire once per worker.
+    try:
+        import fcntl
+        lock_file = open("/tmp/studypace-call-scheduler.lock", "w")
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _start_call_scheduler._lock_file = lock_file  # keep the fd (and lock) alive
+    except OSError:
+        return
 
     _fired_dates: set[str] = set()
 

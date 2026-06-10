@@ -12,7 +12,9 @@ except Exception:
     pass
 
 
-DEFAULT_CLAUDE_MODEL = "claude-haiku-4-5-20251001"
+# claude-3-7-sonnet was retired Feb 2026 (returns 404); sonnet-4-6 is the
+# current model that still fits inside this app's synchronous timeouts.
+DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-6"
 
 
 def _env_float(name: str, fallback: float) -> float:
@@ -73,6 +75,9 @@ def generate_lecture_summary(slide_texts: list[tuple[int, str, str]]) -> str | N
         "or checklist formatting anywhere. Use plain section titles only, like 'Summary: Lecture Topic' and 'Part 1 - Topic Name'. "
         "Mention slide numbers naturally in parentheses, like (Slide 4), when useful for grounding. "
         "Do not include practice questions in this response; practice questions are generated separately.\n\n"
+        "Before writing, work out the logical flow of the lecture: which concepts build on which, "
+        "and what the central insight of each section is. Organize the summary around that flow so a student "
+        "reading it understands why each idea matters, not just what it says.\n\n"
         "---\n"
         f"LECTURE SLIDES:\n{context}\n\n"
         "Write the plain-text study summary now."
@@ -133,6 +138,10 @@ def generate_lesson_questions(slide_texts: list[tuple[int, str, str]], concepts:
         "- bloom: Remembering, Understanding, Application, Analysis, or Evaluation\n"
         "- concept: short concept label\n"
         "- objective: short exam skill being tested\n\n"
+        "Quality bar for every question: it must test application or analysis of the concept, not recall of a "
+        "phrase from the slide; each distractor must be a mistake a real student would plausibly make (wrong "
+        "step order, confused definitions, off-by-one, swapped conditions); and the explanation must be "
+        "verifiable against the cited slide. Discard and replace any question that fails this bar.\n"
         'Return JSON in this exact shape: {"questions":[...]}\n\n'
         f"Important concepts to cover if supported by the slides: {concept_hint or 'choose from the slides'}\n\n"
         f"LECTURE SLIDES:\n{context}"
@@ -216,6 +225,9 @@ def generate_lesson_practice_set(slide_texts: list[tuple[int, str, str]], concep
         "- bloom: Remembering, Understanding, Application, Analysis, or Evaluation\n"
         "- concept: short concept label\n"
         "- objective: short exam skill being tested\n\n"
+        "Quality bar for every item: it must require the student to apply, trace, compare, or predict — never "
+        "to repeat a slide fragment; MCQ distractors must encode real exam traps for this topic; and model "
+        "answers must be checkable against the cited slide. Discard and replace any item that fails this bar.\n"
         'Return JSON in this exact shape: {"written":[...],"mcq":[...]}\n\n'
         f"Important concepts to cover if supported by the slides: {concept_hint or 'choose from the slides'}\n\n"
         f"LECTURE SLIDES:\n{context}"

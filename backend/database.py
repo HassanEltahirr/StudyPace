@@ -46,10 +46,12 @@ def _base_engine_kwargs(url: str) -> dict:
         kwargs["poolclass"] = NullPool
     else:
         kwargs["pool_pre_ping"] = True
-        # Sync route handlers run in Starlette's 40-thread pool, each holding a
-        # session; the default pool (5+10) starves under concurrent load.
-        kwargs["pool_size"] = 10
-        kwargs["max_overflow"] = 30
+        # Supabase direct connections (port 5432) cap at ~60 slots total.
+        # Budget: (3+7) per worker x 2 workers x 2 machines = 40 max; excess
+        # requests queue on pool_timeout instead of crashing the server.
+        kwargs["pool_size"] = 3
+        kwargs["max_overflow"] = 7
+        kwargs["pool_timeout"] = 30
         kwargs["pool_recycle"] = 1800
     return kwargs
 

@@ -177,7 +177,24 @@ def _start_call_scheduler():
     except OSError:
         return
 
-    _fired_dates: set[str] = set()
+    try:
+        with engine.begin() as connection:
+            connection.execute(text("CREATE TABLE IF NOT EXISTS call_reminder_fired (day VARCHAR(10) PRIMARY KEY)"))
+    except Exception as exc:
+        print(f"Call scheduler dedup table error (non-fatal): {exc}")
+
+    def _claim_today(today_key: str) -> bool:
+        """Atomically claim today's reminder. With multiple machines, only the
+        one that wins this insert places the call."""
+        try:
+            with engine.begin() as connection:
+                connection.execute(
+                    text("INSERT INTO call_reminder_fired (day) VALUES (:day)"),
+                    {"day": today_key},
+                )
+            return True
+        except Exception:
+            return False
 
     def _loop():
         import datetime as dt
@@ -186,8 +203,6 @@ def _start_call_scheduler():
             try:
                 now = dt.datetime.now()
                 today_key = now.strftime("%Y-%m-%d")
-                if today_key in _fired_dates:
-                    continue
 
                 target_hhmm = twilio_call_time()  # re-read each cycle so env changes take effect
                 try:
@@ -198,7 +213,8 @@ def _start_call_scheduler():
                 if now.hour != target_h or now.minute != target_m:
                     continue
 
-                _fired_dates.add(today_key)
+                if not _claim_today(today_key):
+                    continue
 
                 db = SessionLocal()
                 try:

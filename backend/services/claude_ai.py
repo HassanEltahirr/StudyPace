@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 try:
@@ -248,6 +250,113 @@ def generate_lesson_practice_set(slide_texts: list[tuple[int, str, str]], concep
         return payload
     except Exception:
         return None
+
+
+PRACTICE_MCQ_SYSTEM = (
+    "You are an exam question writer for Gulf university engineering and CS finals (KU/AUS level). "
+    "Use only facts, formulas, algorithms, and examples present in the provided slides. "
+    "Every question must require calculation, tracing, or application — never definition recall. "
+    "Each distractor must encode a specific, common student error for this topic (wrong step order, "
+    "swapped condition, off-by-one, confused definitions), not a random wrong value. "
+    "Return only a valid JSON array, no markdown, no preamble."
+)
+
+
+def generate_practice_mcqs(
+    title: str,
+    slide_texts: list[tuple[int, str, str]],
+    difficulty: str = "medium",
+    count: int = 5,
+) -> list[dict] | None:
+    """Generate exam-style MCQs in the normalized practice shape
+    ({question, choices, correct, explanation}) used by the practice-exam endpoint.
+
+    Larger sets are split across up to 3 parallel calls over slices of the deck
+    so wall time stays close to a single small call.
+    """
+    if not slide_texts or not os.getenv("ANTHROPIC_API_KEY"):
+        return None
+
+    slides = slide_texts[:50]
+    workers = min(3, max(1, math.ceil(count / 5)), len(slides))
+    if workers == 1:
+        return _practice_mcq_call(title, slides, difficulty, count) or None
+
+    per_chunk = [count // workers] * workers
+    for index in range(count % workers):
+        per_chunk[index] += 1
+    slice_size = math.ceil(len(slides) / workers)
+    chunks = [
+        (slides[index * slice_size:(index + 1) * slice_size] or slides, per_chunk[index])
+        for index in range(workers)
+    ]
+
+    questions: list[dict] = []
+    with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
+        futures = [
+            executor.submit(_practice_mcq_call, title, chunk_slides, difficulty, chunk_count)
+            for chunk_slides, chunk_count in chunks
+        ]
+        for future in futures:
+            questions.extend(future.result() or [])
+
+    seen: set[str] = set()
+    unique: list[dict] = []
+    for question in questions:
+        key = re.sub(r"[^a-z0-9]+", " ", question["question"].lower()).strip()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(question)
+    return unique[:count] or None
+
+
+def _practice_mcq_call(
+    title: str,
+    slide_texts: list[tuple[int, str, str]],
+    difficulty: str,
+    count: int,
+) -> list[dict]:
+    timeout_seconds = _env_float("CLAUDE_PRACTICE_MCQ_TIMEOUT_SECONDS", 16)
+    client = _client(timeout_seconds)
+    if not client:
+        return []
+
+    blocks: list[str] = []
+    for num, slide_title, text in slide_texts:
+        header = f"Slide {num}: {slide_title}" if slide_title else f"Slide {num}"
+        blocks.append(f"{header}\n{text.strip()[:500]}")
+    context = "\n\n".join(blocks)
+
+    user = (
+        f"Lecture deck: {title}\n"
+        f"Difficulty: {difficulty}\n\n"
+        f"SLIDES:\n{context}\n\n"
+        f"Write exactly {count} multiple-choice questions grounded in this material. "
+        "Each question must require calculation or multi-step application of the slide content. "
+        "For mathematical topics, use actual numbers, never abstract-only questions. "
+        "Return a JSON array where each item is "
+        '{"question": "...", "choices": ["A) ...", "B) ...", "C) ...", "D) ..."], '
+        '"correct": 0, "explanation": "why this is correct and where the common mistake is"}. '
+        '"correct" is the zero-based index into "choices". '
+        "Keep each explanation under 80 words: state the key step and the common mistake, "
+        "never a full line-by-line trace."
+    )
+
+    try:
+        response = client.messages.create(
+            model=_model("CLAUDE_QUESTION_MODEL"),
+            max_tokens=min(4000, 300 + count * 280),
+            system=PRACTICE_MCQ_SYSTEM,
+            messages=[{"role": "user", "content": user}],
+            timeout=timeout_seconds,
+        )
+        text = next((b.text for b in response.content if b.type == "text"), "")
+    except Exception:
+        return []
+    # Same wire shape as the Gemini generator, so reuse its parser/validator.
+    from services.gemini_ai import _parse_question_json
+    return _parse_question_json(text)
 
 
 def generate_model_answer(prompt: str, slide_text: str, slide_number: int, kind: str) -> str | None:

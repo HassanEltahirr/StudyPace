@@ -58,16 +58,24 @@ def gemini_available() -> bool:
     return bool(os.getenv("GEMINI_API_KEY"))
 
 
-def _generate(system_prompt: str, user_prompt: str, timeout_seconds: float, json_mode: bool = False) -> str | None:
+def _generate(
+    system_prompt: str,
+    user_prompt: str,
+    timeout_seconds: float,
+    json_mode: bool = False,
+    thinking_budget: int = 0,
+) -> str | None:
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         return None
 
     generation_config: dict = {"temperature": 0.4, "maxOutputTokens": 16384}
     if GEMINI_MODEL.startswith("gemini-2.5"):
-        # 2.5 models think by default and the thoughts consume maxOutputTokens;
-        # summaries and MCQs don't need it, so spend the whole budget on output.
-        generation_config["thinkingConfig"] = {"thinkingBudget": 0}
+        # 2.5 models think by default and the thoughts consume maxOutputTokens.
+        # Summaries don't need thinking (budget 0), but calculation questions do:
+        # with thinking fully off the model writes answer keys that contradict
+        # its own explanations (measured 2/3 wrong on numeric MCQs).
+        generation_config["thinkingConfig"] = {"thinkingBudget": max(0, int(thinking_budget))}
     payload: dict = {
         "systemInstruction": {"parts": [{"text": system_prompt}]},
         "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
@@ -205,7 +213,13 @@ def _practice_call(
         "Keep each explanation under 80 words: state the key step and the common mistake, "
         "never a full line-by-line trace."
     )
-    raw = _generate(PRACTICE_SYSTEM_PROMPT, user, _env_float("GEMINI_PRACTICE_TIMEOUT_SECONDS", 18), json_mode=True)
+    raw = _generate(
+        PRACTICE_SYSTEM_PROMPT,
+        user,
+        _env_float("GEMINI_PRACTICE_TIMEOUT_SECONDS", 25),
+        json_mode=True,
+        thinking_budget=int(_env_float("GEMINI_PRACTICE_THINKING_BUDGET", 1024)),
+    )
     if not raw:
         return []
     return _parse_question_json(raw)

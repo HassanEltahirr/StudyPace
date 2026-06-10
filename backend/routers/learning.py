@@ -58,7 +58,7 @@ from schemas import (
     LessonQuizSubmission,
     LessonQuizResult,
 )
-from services.claude_ai import generate_lesson_questions as generate_claude_questions
+from services.claude_ai import generate_practice_mcqs as generate_claude_practice_mcqs
 from services.gemini_ai import gemini_available, generate_deck_summary, generate_practice_questions
 from services.local_ai import LocalAI
 from services.object_storage import content_type_for_filename, object_storage, workspace_object_key
@@ -414,14 +414,25 @@ def lecture_practice_exam(lecture_id: int, payload: dict, db: Session = Depends(
 
     slides = sorted(lecture.slides, key=lambda s: s.slide_number)
     slide_texts = _practice_slide_texts_for_lecture(lecture, slides)
-    questions = generate_practice_questions(
-        _lecture_display_title(lecture),
-        slide_texts,
-        difficulty=difficulty,
-        count=count,
-    )
+    title = _lecture_display_title(lecture)
+
+    # Race both providers instead of trying them serially: Claude (better
+    # questions) is preferred, Gemini is already finished by the time we fall
+    # back to it, so a Claude miss costs ~nothing extra.
+    pool = ThreadPoolExecutor(max_workers=2)
+    claude_future = pool.submit(generate_claude_practice_mcqs, title, slide_texts, difficulty, count)
+    gemini_future = pool.submit(generate_practice_questions, title, slide_texts, difficulty=difficulty, count=count)
+    pool.shutdown(wait=False)
+
+    try:
+        questions = claude_future.result(timeout=20)
+    except Exception:
+        questions = None
     if not questions:
-        questions = _claude_practice_questions(slide_texts, count=count)
+        try:
+            questions = gemini_future.result(timeout=20)
+        except Exception:
+            questions = None
     if not questions:
         questions = _fallback_practice_questions(lecture, slides, count=count)
     if not questions:
@@ -429,40 +440,6 @@ def lecture_practice_exam(lecture_id: int, payload: dict, db: Session = Depends(
     if not questions:
         raise HTTPException(422, "This deck does not have enough readable slide text to make practice questions.")
     return {"lecture_id": lecture.id, "difficulty": difficulty, "questions": questions}
-
-
-def _claude_practice_questions(slide_texts: list[tuple[int, str, str]], count: int = 5) -> list[dict]:
-    raw_questions = generate_claude_questions(slide_texts)
-    if not raw_questions:
-        return []
-
-    letter_to_index = {"a": 0, "b": 1, "c": 2, "d": 3}
-    questions: list[dict] = []
-    for item in raw_questions:
-        if not isinstance(item, dict):
-            continue
-        prompt = _clean_display_text(str(item.get("prompt") or ""))
-        options = item.get("options")
-        correct = letter_to_index.get(str(item.get("correct") or "").lower())
-        if not prompt or correct is None or not isinstance(options, dict):
-            continue
-        choices = []
-        for letter in ("a", "b", "c", "d"):
-            option = _clean_display_text(str(options.get(letter) or ""))
-            if not option:
-                break
-            choices.append(f"{letter.upper()}) {option}")
-        if len(choices) != 4:
-            continue
-        questions.append({
-            "question": prompt,
-            "choices": choices,
-            "correct": correct,
-            "explanation": _clean_display_text(str(item.get("explanation") or "Use the cited slide to justify the correct option.")),
-        })
-        if len(questions) >= count:
-            break
-    return questions
 
 
 def _fallback_practice_questions(lecture: Lecture, slides: list[Slide], count: int = 5) -> list[dict]:

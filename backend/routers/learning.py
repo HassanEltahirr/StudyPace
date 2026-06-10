@@ -433,7 +433,10 @@ def _fallback_practice_questions(lecture: Lecture, slides: list[Slide], count: i
     questions: list[dict] = []
     letter_to_index = {"a": 0, "b": 1, "c": 2, "d": 3}
 
-    stored_questions = sorted(lecture.questions, key=_question_sort_key)
+    stored_questions = [
+        question for question in sorted(lecture.questions, key=_question_sort_key)
+        if _is_generated_lesson_mcq(question)
+    ]
     for q in stored_questions:
         options = [q.option_a, q.option_b, q.option_c, q.option_d]
         if not q.prompt or any(not option for option in options):
@@ -3482,7 +3485,11 @@ def _lesson_detail(lecture: Lecture) -> dict:
         "local_only": lecture.local_only,
         "learning_objectives": _clean_display_list(_json_load(lecture.learning_objectives_json, [])),
         "slides": [_slide(s, can_render_images) for s in sorted(lecture.slides, key=lambda s: s.slide_number)],
-        "questions": [_question(q, include_answer=False) for q in sorted(lecture.questions, key=_question_sort_key)],
+        "questions": [
+            _question(q, include_answer=False)
+            for q in sorted(lecture.questions, key=_question_sort_key)
+            if _is_generated_lesson_mcq(q)
+        ],
         "flashcards": [_flashcard(c) for c in sorted(lecture.flashcards, key=lambda c: c.slide_number)],
     }
 

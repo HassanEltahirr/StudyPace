@@ -182,9 +182,8 @@ def _objectives(slides: list[ExtractedSlide], concepts: list[str]) -> list[str]:
 
 def _questions(slides: list[ExtractedSlide], concepts: list[str]) -> list[dict]:
     extracted = _extracted_questions(slides)
-    coverage = _coverage_questions(slides, concepts)
     generated = _generated_mcqs(slides, concepts)
-    return _dedupe_generated_questions([*extracted, *coverage, *generated])
+    return _dedupe_generated_questions([*extracted, *generated])
 
 
 def _coverage_questions(slides: list[ExtractedSlide], concepts: list[str]) -> list[dict]:

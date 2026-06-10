@@ -134,7 +134,7 @@ export default function Lesson() {
 
       <PlanCompletion nextStep={nextStep} lesson={lesson} planDate={planDateParam} onLessonComplete={setLesson} />
 
-      {lesson.mastery_score >= 0.8 && !aiUnavailable && <TestYourself lesson={lesson} />}
+      {!aiUnavailable && <TestYourself lesson={lesson} />}
       {lesson.mastery_score >= 0.8 && <LectureVideos lectureId={lesson.id} />}
     </article>
   )

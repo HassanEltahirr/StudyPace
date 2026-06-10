@@ -404,7 +404,7 @@ def lecture_practice_exam(lecture_id: int, payload: dict, db: Session = Depends(
     count = max(1, min(count, 15))
 
     slides = sorted(lecture.slides, key=lambda s: s.slide_number)
-    slide_texts = [(s.slide_number, s.title or "", s.text or "") for s in slides if (s.text or "").strip()]
+    slide_texts = _practice_slide_texts_for_lecture(lecture, slides)
     questions = generate_practice_questions(
         _lecture_display_title(lecture),
         slide_texts,
@@ -414,6 +414,32 @@ def lecture_practice_exam(lecture_id: int, payload: dict, db: Session = Depends(
     if not questions:
         raise HTTPException(502, "Could not generate practice questions right now. Try again in a moment.")
     return {"lecture_id": lecture.id, "difficulty": difficulty, "questions": questions}
+
+
+def _practice_slide_texts_for_lecture(lecture: Lecture, slides: list[Slide]) -> list[tuple[int, str, str]]:
+    slide_texts = [
+        (s.slide_number, s.title or "", s.text or "")
+        for s in slides
+        if _has_usable_practice_text(s.text or "")
+    ]
+    if slide_texts:
+        return slide_texts
+
+    fallback = (lecture.ai_summary or lecture.summary or "").strip()
+    if fallback and "image-based PDF" not in fallback:
+        return [(1, _lecture_display_title(lecture), fallback)]
+    if (lecture.ai_summary or "").strip():
+        return [(1, _lecture_display_title(lecture), lecture.ai_summary.strip())]
+    return []
+
+
+def _has_usable_practice_text(value: str) -> bool:
+    text = re.sub(r"\s+", " ", value or "").strip()
+    if len(text) < 140:
+        return False
+    if text.lower().startswith("this pdf slide is image-based"):
+        return False
+    return True
 
 
 @router.get("/lectures/{lecture_id}/videos")

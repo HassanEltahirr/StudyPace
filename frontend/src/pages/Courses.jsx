@@ -10,7 +10,7 @@ const COLORS = ['#c87941', '#9a6a3f', '#b8864b', '#8f6244', '#d69a5f', '#7c5f46'
 const UPLOAD_EXTENSIONS = ['.pdf', '.ppt', '.pptx', '.docx', '.txt', '.md']
 const UPLOAD_ACCEPT = UPLOAD_EXTENSIONS.join(',')
 const MAX_UPLOAD_MB = 50
-const UPLOAD_CONCURRENCY = 3
+const UPLOAD_CONCURRENCY = 1
 
 export default function Courses() {
   const { courseId } = useParams()
@@ -61,6 +61,7 @@ export default function Courses() {
     setCoursesLoading(true)
     try {
       const loaded = await api.getCourses()
+      setError('')
       setCourses(loaded)
       if (!selectedId && loaded[0]) setSelectedId(String(loaded[0].id))
     } catch (e) {
@@ -83,6 +84,7 @@ export default function Courses() {
       setCourses(prev => [...prev, created])
       setSelectedId(String(created.id))
       setNewCourse({ name: '' })
+      setError('')
     } catch (e) {
       setError(e.message)
     }
@@ -127,6 +129,7 @@ export default function Courses() {
     try {
       await Promise.all(Array.from({ length: Math.min(UPLOAD_CONCURRENCY, queue.length) }, worker))
       setDetail(await api.getCourseDetail(selectedId))
+      if (!problems.length) setError('')
     } catch (e) {
       problems.push(e.message)
     } finally {

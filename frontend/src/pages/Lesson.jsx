@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { api, getToken } from '../api'
 import StudyCompletionInteraction from '../components/StudyCompletionInteraction'
@@ -953,10 +953,29 @@ function LectureSlides({ slides = [] }) {
 }
 
 function SlideImage({ src, alt, fallbackText }) {
+  const containerRef = useRef(null)
+  const [shouldLoad, setShouldLoad] = useState(false)
   const [objectUrl, setObjectUrl] = useState('')
   const [failed, setFailed] = useState(false)
 
   useEffect(() => {
+    const node = containerRef.current
+    if (!node || shouldLoad) return undefined
+    const observer = new IntersectionObserver(
+      entries => {
+        if (entries.some(entry => entry.isIntersecting)) {
+          setShouldLoad(true)
+          observer.disconnect()
+        }
+      },
+      { rootMargin: '900px 0px' }
+    )
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [shouldLoad])
+
+  useEffect(() => {
+    if (!shouldLoad) return undefined
     let cancelled = false
     let revokeUrl = ''
     setObjectUrl('')
@@ -983,11 +1002,11 @@ function SlideImage({ src, alt, fallbackText }) {
       cancelled = true
       if (revokeUrl) URL.revokeObjectURL(revokeUrl)
     }
-  }, [src])
+  }, [src, shouldLoad])
 
   if (failed) {
     return (
-      <p className="surface-soft whitespace-pre-wrap p-4 text-sm leading-6 text-[var(--text-muted)]">
+      <p ref={containerRef} className="surface-soft whitespace-pre-wrap p-4 text-sm leading-6 text-[var(--text-muted)]">
         {fallbackText || 'Slide image could not be loaded.'}
       </p>
     )
@@ -995,8 +1014,8 @@ function SlideImage({ src, alt, fallbackText }) {
 
   if (!objectUrl) {
     return (
-      <div className="grid min-h-[220px] place-items-center rounded-lg border border-[var(--border)] bg-[var(--surface-raised)] text-sm font-medium text-[var(--text-faint)]">
-        Loading slide...
+      <div ref={containerRef} className="grid min-h-[220px] place-items-center rounded-lg border border-[var(--border)] bg-[var(--surface-raised)] text-sm font-medium text-[var(--text-faint)]">
+        {shouldLoad ? 'Loading slide...' : 'Slide image'}
       </div>
     )
   }

@@ -114,7 +114,7 @@ def generate_deck_summary(title: str, slide_texts: list[tuple[int, str, str]]) -
         f"SLIDES:\n{context}\n\n"
         "Write the study summary now."
     )
-    return _generate(SUMMARY_SYSTEM_PROMPT, user, _env_float("GEMINI_SUMMARY_TIMEOUT_SECONDS", 30))
+    return _generate(SUMMARY_SYSTEM_PROMPT, user, _env_float("GEMINI_SUMMARY_TIMEOUT_SECONDS", 10))
 
 
 def generate_practice_questions(
@@ -203,7 +203,7 @@ def _practice_call(
         "Keep each explanation under 80 words: state the key step and the common mistake, "
         "never a full line-by-line trace."
     )
-    raw = _generate(PRACTICE_SYSTEM_PROMPT, user, _env_float("GEMINI_PRACTICE_TIMEOUT_SECONDS", 45), json_mode=True)
+    raw = _generate(PRACTICE_SYSTEM_PROMPT, user, _env_float("GEMINI_PRACTICE_TIMEOUT_SECONDS", 7), json_mode=True)
     if not raw:
         return []
     return _parse_question_json(raw)

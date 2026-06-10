@@ -17,7 +17,7 @@ from pathlib import Path
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
-from sqlalchemy.exc import NoSuchTableError
+from sqlalchemy.exc import NoSuchTableError, OperationalError
 from sqlalchemy.pool import NullPool
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
@@ -194,9 +194,13 @@ def ensure_schema_compatibility(bind=engine, schema: str | None = None) -> None:
             qualified = _qualified_table(table, schema)
             for column_name, column_definition in expected_columns:
                 if column_name not in columns:
-                    connection.execute(
-                        text(f"ALTER TABLE {qualified} ADD COLUMN {column_name} {column_definition}")
-                    )
+                    try:
+                        connection.execute(
+                            text(f"ALTER TABLE {qualified} ADD COLUMN {column_name} {column_definition}")
+                        )
+                    except OperationalError as exc:
+                        if "duplicate column name" not in str(exc).lower():
+                            raise
         if "email" in _columns_for(connection, "users", schema):
             connection.execute(
                 text(

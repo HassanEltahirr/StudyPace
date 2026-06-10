@@ -141,14 +141,19 @@ export default function Lesson() {
 }
 
 function DeckSummary({ lesson, onUnavailable }) {
-  const [summary, setSummary] = useState(lesson.ai_summary || '')
-  const [status, setStatus] = useState(lesson.ai_summary ? 'ready' : 'pending')
+  const quickSummary = lesson.ai_summary || lesson.summary || ''
+  const [summary, setSummary] = useState(quickSummary)
+  const [status, setStatus] = useState(lesson.ai_summary ? 'ready' : quickSummary ? 'quick' : 'pending')
 
   useEffect(() => {
     if (lesson.ai_summary) {
       setSummary(lesson.ai_summary)
       setStatus('ready')
       return undefined
+    }
+    if (lesson.summary) {
+      setSummary(lesson.summary)
+      setStatus('quick')
     }
     let active = true
     let timer = null
@@ -168,16 +173,16 @@ function DeckSummary({ lesson, onUnavailable }) {
             onUnavailable?.()
             return
           }
-          if (tries >= 8) {
-            setStatus('unavailable')
+          if (tries >= 6) {
+            setStatus(summary ? 'quick' : 'unavailable')
             return
           }
           tries += 1
-          setStatus('pending')
-          timer = setTimeout(poll, 5000)
+          if (!summary) setStatus('pending')
+          timer = setTimeout(poll, tries < 3 ? 1200 : 2500)
         })
         .catch(() => {
-          if (active) setStatus('unavailable')
+          if (active) setStatus(summary ? 'quick' : 'unavailable')
         })
     }
     poll()
@@ -186,7 +191,7 @@ function DeckSummary({ lesson, onUnavailable }) {
       active = false
       if (timer) clearTimeout(timer)
     }
-  }, [lesson.id, lesson.ai_summary])
+  }, [lesson.id, lesson.ai_summary, lesson.summary])
 
   if (status === 'unavailable') return null
 
@@ -210,6 +215,11 @@ function DeckSummary({ lesson, onUnavailable }) {
                 {formulas.join('\n')}
               </p>
             </div>
+          )}
+          {status === 'quick' && (
+            <p className="mt-3 text-xs font-semibold uppercase tracking-[0.08em] text-[var(--text-faint)]">
+              Fast summary shown. AI summary updates when ready.
+            </p>
           )}
         </>
       )}
@@ -265,7 +275,6 @@ function TestYourself({ lesson }) {
     if (loading) return
     setLoading(true)
     setError('')
-    setQuestions([])
     setAnswers({})
     setChecked({})
     try {

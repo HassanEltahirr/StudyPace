@@ -422,8 +422,81 @@ def lecture_practice_exam(lecture_id: int, payload: dict, db: Session = Depends(
         count=count,
     )
     if not questions:
-        raise HTTPException(502, "Could not generate practice questions right now. Try again in a moment.")
+        questions = _fallback_practice_questions(lecture, slides, count=count)
+    if not questions:
+        raise HTTPException(422, "This deck needs readable slide text or an AI summary before practice questions can be made.")
     return {"lecture_id": lecture.id, "difficulty": difficulty, "questions": questions}
+
+
+def _fallback_practice_questions(lecture: Lecture, slides: list[Slide], count: int = 5) -> list[dict]:
+    """Return usable practice when Gemini is unavailable or returns bad JSON."""
+    questions: list[dict] = []
+    letter_to_index = {"a": 0, "b": 1, "c": 2, "d": 3}
+
+    stored_questions = sorted(lecture.questions, key=_question_sort_key)
+    for q in stored_questions:
+        options = [q.option_a, q.option_b, q.option_c, q.option_d]
+        if not q.prompt or any(not option for option in options):
+            continue
+        questions.append({
+            "question": _clean_display_text(q.prompt),
+            "choices": [f"{letter}) {_clean_display_text(option)}" for letter, option in zip(("A", "B", "C", "D"), options)],
+            "correct": letter_to_index.get((q.correct or "").lower(), 0),
+            "explanation": _clean_display_text(q.explanation or "Review the cited slide and compare each option against the lecture wording."),
+        })
+        if len(questions) >= count:
+            return questions
+
+    review_points = _practice_review_points(lecture, slides)
+    distractors = [
+        "It is only a definition and does not affect problem solving.",
+        "It applies only when the variables are independent.",
+        "It removes the need to check the conditions in the problem.",
+        "It is mainly a notation change with no conceptual effect.",
+    ]
+    for index, point in enumerate(review_points):
+        clean_point = _clip(_clean_display_text(point), 180)
+        if len(clean_point) < 20:
+            continue
+        slide_hint = ""
+        if slides:
+            slide_hint = f" from slide {slides[min(index, len(slides) - 1)].slide_number}"
+        questions.append({
+            "question": f"Which statement best matches the key idea{slide_hint}?",
+            "choices": [
+                f"A) {clean_point}",
+                f"B) {distractors[index % len(distractors)]}",
+                f"C) {distractors[(index + 1) % len(distractors)]}",
+                f"D) {distractors[(index + 2) % len(distractors)]}",
+            ],
+            "correct": 0,
+            "explanation": "The correct choice is the one grounded in the lecture summary. The other options are common overgeneralizations.",
+        })
+        if len(questions) >= count:
+            break
+    return questions
+
+
+def _practice_review_points(lecture: Lecture, slides: list[Slide]) -> list[str]:
+    source = (lecture.ai_summary or lecture.summary or "").strip()
+    points: list[str] = []
+    for line in source.splitlines():
+        cleaned = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", line).strip()
+        cleaned = re.sub(r"^#{1,4}\s*", "", cleaned).strip()
+        if 35 <= len(cleaned) <= 260 and not cleaned.lower().startswith(("summary:", "part ")):
+            points.append(cleaned)
+    if points:
+        return points
+
+    for slide in slides:
+        text = _clean_display_text(slide.text or "")
+        sentences = re.split(r"(?<=[.!?])\s+", text)
+        for sentence in sentences:
+            if 45 <= len(sentence) <= 220:
+                points.append(sentence.strip())
+            if len(points) >= 12:
+                return points
+    return points
 
 
 def _practice_slide_texts_for_lecture(lecture: Lecture, slides: list[Slide]) -> list[tuple[int, str, str]]:

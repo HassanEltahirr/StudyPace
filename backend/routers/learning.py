@@ -58,6 +58,7 @@ from schemas import (
     LessonQuizSubmission,
     LessonQuizResult,
 )
+from services.claude_ai import generate_lesson_questions as generate_claude_questions
 from services.gemini_ai import gemini_available, generate_deck_summary, generate_practice_questions
 from services.local_ai import LocalAI
 from services.object_storage import content_type_for_filename, object_storage, workspace_object_key
@@ -400,8 +401,6 @@ def lecture_ai_summary(lecture_id: int, db: Session = Depends(get_db)):
 def lecture_practice_exam(lecture_id: int, payload: dict, db: Session = Depends(get_db)):
     """Generate Gulf-exam-style practice questions on demand. Never pregenerated."""
     lecture = _get_lecture(db, lecture_id)
-    if not gemini_available():
-        raise HTTPException(503, "Practice questions need GEMINI_API_KEY configured on the server.")
 
     difficulty = str(payload.get("difficulty") or "medium").lower().strip()
     if difficulty not in {"easy", "medium", "hard"}:
@@ -422,10 +421,48 @@ def lecture_practice_exam(lecture_id: int, payload: dict, db: Session = Depends(
         count=count,
     )
     if not questions:
+        questions = _claude_practice_questions(slide_texts, count=count)
+    if not questions:
         questions = _fallback_practice_questions(lecture, slides, count=count)
     if not questions:
-        raise HTTPException(503, "The question writer is busy. Try again in a moment.")
+        questions = _local_practice_questions(lecture, slides, count=count)
+    if not questions:
+        raise HTTPException(422, "This deck does not have enough readable slide text to make practice questions.")
     return {"lecture_id": lecture.id, "difficulty": difficulty, "questions": questions}
+
+
+def _claude_practice_questions(slide_texts: list[tuple[int, str, str]], count: int = 5) -> list[dict]:
+    raw_questions = generate_claude_questions(slide_texts)
+    if not raw_questions:
+        return []
+
+    letter_to_index = {"a": 0, "b": 1, "c": 2, "d": 3}
+    questions: list[dict] = []
+    for item in raw_questions:
+        if not isinstance(item, dict):
+            continue
+        prompt = _clean_display_text(str(item.get("prompt") or ""))
+        options = item.get("options")
+        correct = letter_to_index.get(str(item.get("correct") or "").lower())
+        if not prompt or correct is None or not isinstance(options, dict):
+            continue
+        choices = []
+        for letter in ("a", "b", "c", "d"):
+            option = _clean_display_text(str(options.get(letter) or ""))
+            if not option:
+                break
+            choices.append(f"{letter.upper()}) {option}")
+        if len(choices) != 4:
+            continue
+        questions.append({
+            "question": prompt,
+            "choices": choices,
+            "correct": correct,
+            "explanation": _clean_display_text(str(item.get("explanation") or "Use the cited slide to justify the correct option.")),
+        })
+        if len(questions) >= count:
+            break
+    return questions
 
 
 def _fallback_practice_questions(lecture: Lecture, slides: list[Slide], count: int = 5) -> list[dict]:
@@ -450,6 +487,165 @@ def _fallback_practice_questions(lecture: Lecture, slides: list[Slide], count: i
         if len(questions) >= count:
             return questions
     return questions
+
+
+def _local_practice_questions(lecture: Lecture, slides: list[Slide], count: int = 5) -> list[dict]:
+    """Create grounded practice from slide text when external AI is unavailable."""
+    candidates: list[tuple[int, str, str]] = []
+    for slide in slides:
+        topic = _clean_practice_topic(slide.title or "")
+        if not topic:
+            topic = _clean_practice_topic(_first_meaningful_line(slide.text or ""))
+        evidence = _best_practice_sentence(slide.text or "", topic)
+        if topic and evidence:
+            candidates.append((slide.slide_number, topic, evidence))
+
+    if not candidates:
+        candidates.extend(_question_topic_candidates(lecture))
+    if not candidates:
+        candidates.extend(_summary_topic_candidates(lecture, slides))
+    if not candidates:
+        return []
+
+    questions: list[dict] = []
+    for index, (slide_number, topic, evidence) in enumerate(candidates):
+        prompt = _local_practice_prompt(topic, slide_number, index)
+        correct = _clip(_clean_display_text(evidence), 190)
+        if len(correct) < 18:
+            continue
+        choices = [
+            f"A) {correct}",
+            f"B) It is only a vocabulary label and does not affect how a problem is solved.",
+            f"C) It can be applied without checking the conditions stated in the lecture.",
+            f"D) It should be answered from general knowledge before using the slide.",
+        ]
+        questions.append({
+            "question": prompt,
+            "choices": choices,
+            "correct": 0,
+            "explanation": f"Slide {slide_number} supports option A. The other options ignore the lecture conditions or replace the slide with vague general knowledge.",
+        })
+        if len(questions) >= count:
+            break
+    return questions
+
+
+def _question_topic_candidates(lecture: Lecture) -> list[tuple[int, str, str]]:
+    candidates: list[tuple[int, str, str]] = []
+    seen: set[str] = set()
+    for question in sorted(lecture.questions, key=_question_sort_key):
+        topic = _topic_from_existing_prompt(question.prompt or "")
+        if not topic:
+            topic = _clean_practice_topic(question.topic_tag or "")
+        if not topic:
+            continue
+        key = topic.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        evidence = _clean_display_text(question.explanation or topic)
+        evidence = re.sub(r"^slide\s+\d+\s+supports\s+option\s+a\s*:\s*", "", evidence, flags=re.I).strip()
+        candidates.append((question.slide_number or len(candidates) + 1, topic, evidence or topic))
+        if len(candidates) >= 12:
+            break
+    return candidates
+
+
+def _summary_topic_candidates(lecture: Lecture, slides: list[Slide]) -> list[tuple[int, str, str]]:
+    candidates: list[tuple[int, str, str]] = []
+    source = lecture.ai_summary or lecture.summary or ""
+    for index, point in enumerate(_practice_review_points(lecture, slides)):
+        topic = _clean_practice_topic(point.split(":")[0])
+        if not topic:
+            topic = _clean_practice_topic(" ".join(point.split()[:5]))
+        evidence = _clean_display_text(point)
+        if topic and evidence:
+            slide_number = slides[min(index, len(slides) - 1)].slide_number if slides else index + 1
+            candidates.append((slide_number, topic, evidence))
+        if len(candidates) >= 12:
+            break
+    if candidates:
+        return candidates
+
+    for index, sentence in enumerate(re.split(r"(?<=[.!?])\s+", _clean_display_text(source))):
+        if 35 <= len(sentence) <= 220:
+            topic = _clean_practice_topic(" ".join(sentence.split()[:5]))
+            if topic:
+                candidates.append((index + 1, topic, sentence))
+        if len(candidates) >= 12:
+            break
+    return candidates
+
+
+def _topic_from_existing_prompt(prompt: str) -> str:
+    cleaned = _clean_display_text(prompt)
+    patterns = (
+        r"key point about\s+(.+?)\?$",
+        r"slide on\s+(.+?)\s+but must answer",
+        r"involving\s+(.+?)\.",
+        r"about\s+(.+?)\s+using slide",
+        r"explain\s+(.+?)\s+in your own words",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, cleaned, flags=re.I)
+        if match:
+            return _clean_practice_topic(match.group(1))
+    return ""
+
+
+def _local_practice_prompt(topic: str, slide_number: int, index: int) -> str:
+    patterns = [
+        "In a new exam scenario about {topic}, which answer stays grounded in slide {slide_number}?",
+        "A student is solving a problem involving {topic}. Which choice uses slide {slide_number} correctly?",
+        "Which option would be the strongest first step when applying {topic} from slide {slide_number}?",
+        "For {topic}, which statement is safest to use as the basis for an exam answer from slide {slide_number}?",
+    ]
+    return patterns[index % len(patterns)].format(topic=topic, slide_number=slide_number)
+
+
+def _clean_practice_topic(value: str) -> str:
+    cleaned = _clean_display_text(value)
+    cleaned = re.sub(r"^(?:slide|chapter|lecture)\s*\d+\s*[:.)-]?\s*", "", cleaned, flags=re.I).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    cleaned = re.sub(r"^(?:a|an|the)\s+", "", cleaned, flags=re.I).strip()
+    relation = re.search(r"\b(?:is|are|describes|refers to|means|consists of|contains)\b", cleaned, flags=re.I)
+    if relation and relation.start() >= 5:
+        cleaned = cleaned[:relation.start()].strip()
+    cleaned = re.sub(r"\b(?:is|are|was|were)$", "", cleaned, flags=re.I).strip()
+    cleaned = re.sub(r"^(?:for|when|if)\s+(.+?)\s+to\s+(.+)$", r"\1 \2", cleaned, flags=re.I).strip()
+    if not cleaned or len(cleaned) > 80:
+        return ""
+    if re.fullmatch(r"\d+", cleaned):
+        return ""
+    return cleaned
+
+
+def _first_meaningful_line(text: str) -> str:
+    for line in (text or "").splitlines():
+        cleaned = _clean_display_text(line)
+        if 4 <= len(cleaned.split()) <= 10 and not re.search(r"https?://", cleaned):
+            return cleaned
+    return ""
+
+
+def _best_practice_sentence(text: str, topic: str) -> str:
+    cleaned_text = _clean_display_text(text or "")
+    sentences = re.split(r"(?<=[.!?])\s+|\n+", cleaned_text)
+    usable: list[str] = []
+    for sentence in sentences:
+        sentence = _clean_display_text(sentence)
+        words = sentence.split()
+        if 6 <= len(words) <= 34 and not re.search(r"https?://|copyright|all rights", sentence, flags=re.I):
+            usable.append(sentence)
+    if not usable:
+        return topic
+    topic_tokens = {token for token in re.findall(r"[a-z0-9]+", topic.lower()) if len(token) > 2}
+    if topic_tokens:
+        for sentence in usable:
+            sentence_tokens = set(re.findall(r"[a-z0-9]+", sentence.lower()))
+            if topic_tokens & sentence_tokens:
+                return sentence
+    return usable[0]
 
 
 def _practice_review_points(lecture: Lecture, slides: list[Slide]) -> list[str]:

@@ -18,7 +18,14 @@ from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from config import ALLOWED_UPLOAD_EXTENSIONS, max_upload_bytes
-from database import current_workspace_data_dir, get_db, workspace_session
+from database import (
+    current_request_username,
+    current_workspace_data_dir,
+    get_db,
+    reset_request_username,
+    set_request_username,
+    workspace_session,
+)
 from models import (
     AnswerAttempt,
     Assessment,
@@ -50,12 +57,14 @@ from schemas import (
     LessonQuizSubmission,
     LessonQuizResult,
 )
+from services.gemini_ai import gemini_available, generate_deck_summary, generate_practice_questions
 from services.local_ai import LocalAI
 from services.object_storage import content_type_for_filename, object_storage, workspace_object_key
 from services.question_generator import GeneratedLesson, build_lesson
 from services.simple_cache import clear_workspace_cache, get_cached, set_cached, workspace_cache_key
 from services.slide_parser import ExtractedSlide, SlideExtractionError, extract_slides
 from services.syllabus_parser import parse_syllabus
+from services.youtube_recs import recommend_videos, youtube_available
 
 try:
     import fitz
@@ -348,6 +357,7 @@ def upload_lecture(course_id: int, payload: LectureUpload, db: Session = Depends
     db.commit()
     clear_workspace_cache()
     db.expire_all()
+    _generate_ai_summary_in_background(lecture_id)
     lecture = db.query(Lecture).filter(Lecture.id == lecture_id).first()
     return _lesson_detail(lecture)
 
@@ -356,6 +366,112 @@ def upload_lecture(course_id: int, payload: LectureUpload, db: Session = Depends
 def lecture_detail(lecture_id: int, db: Session = Depends(get_db)):
     lecture = _get_lecture(db, lecture_id)
     return _lesson_detail(lecture)
+
+
+@router.get("/lectures/{lecture_id}/ai-summary")
+def lecture_ai_summary(lecture_id: int, db: Session = Depends(get_db)):
+    """Deck summary shown before the student starts studying.
+
+    Generated once in the background and cached in the DB; this endpoint only
+    kicks off generation when the stored summary is missing (e.g. decks
+    uploaded before summaries existed).
+    """
+    lecture = _get_lecture(db, lecture_id)
+    summary = (lecture.ai_summary or "").strip()
+    if summary:
+        return {"status": "ready", "summary": summary}
+    if not gemini_available():
+        return {"status": "unavailable", "summary": ""}
+    _generate_ai_summary_in_background(lecture.id)
+    return {"status": "pending", "summary": ""}
+
+
+@router.post("/lectures/{lecture_id}/practice-exam")
+def lecture_practice_exam(lecture_id: int, payload: dict, db: Session = Depends(get_db)):
+    """Generate Gulf-exam-style practice questions on demand. Never pregenerated."""
+    lecture = _get_lecture(db, lecture_id)
+    if not gemini_available():
+        raise HTTPException(503, "Practice questions need GEMINI_API_KEY configured on the server.")
+
+    difficulty = str(payload.get("difficulty") or "medium").lower().strip()
+    if difficulty not in {"easy", "medium", "hard"}:
+        difficulty = "medium"
+
+    try:
+        count = int(payload.get("count") or 5)
+    except (TypeError, ValueError):
+        count = 5
+    count = max(1, min(count, 15))
+
+    slides = sorted(lecture.slides, key=lambda s: s.slide_number)
+    slide_texts = [(s.slide_number, s.title or "", s.text or "") for s in slides if (s.text or "").strip()]
+    questions = generate_practice_questions(
+        _lecture_display_title(lecture),
+        slide_texts,
+        difficulty=difficulty,
+        count=count,
+    )
+    if not questions:
+        raise HTTPException(502, "Could not generate practice questions right now. Try again in a moment.")
+    return {"lecture_id": lecture.id, "difficulty": difficulty, "questions": questions}
+
+
+@router.get("/lectures/{lecture_id}/videos")
+def lecture_videos(lecture_id: int, db: Session = Depends(get_db)):
+    """Up to 3 lecture videos for a finished deck, cached in the DB to protect quota."""
+    lecture = _get_lecture(db, lecture_id)
+    cached = _json_load(lecture.video_recs_json, [])
+    if cached:
+        return {"videos": cached}
+    if not youtube_available():
+        return {"videos": []}
+
+    fallback_topics = _clean_display_list(_json_load(lecture.key_concepts_json, []))
+    videos = recommend_videos(_lecture_display_title(lecture), fallback_topics)
+    if videos:
+        lecture.video_recs_json = json.dumps(videos)
+        db.commit()
+        clear_workspace_cache()
+    return {"videos": videos}
+
+
+_AI_SUMMARY_PENDING_LOCK = threading.Lock()
+_AI_SUMMARY_PENDING: set[tuple[str, int]] = set()
+
+
+def _generate_ai_summary_in_background(lecture_id: int) -> None:
+    if not gemini_available():
+        return
+    username = current_request_username()
+    pending_key = (username or "public", lecture_id)
+    with _AI_SUMMARY_PENDING_LOCK:
+        if pending_key in _AI_SUMMARY_PENDING:
+            return
+        _AI_SUMMARY_PENDING.add(pending_key)
+
+    def run() -> None:
+        token = set_request_username(username)
+        try:
+            with workspace_session() as db:
+                lecture = db.get(Lecture, lecture_id)
+                if not lecture or (lecture.ai_summary or "").strip():
+                    return
+                slides = sorted(lecture.slides, key=lambda s: s.slide_number)
+                slide_texts = [(s.slide_number, s.title or "", s.text or "") for s in slides if (s.text or "").strip()]
+                summary = generate_deck_summary(_lecture_display_title(lecture), slide_texts)
+                if not summary:
+                    return
+                lecture.ai_summary = summary.strip()
+                db.commit()
+                clear_workspace_cache()
+        except Exception as exc:
+            print(f"AI summary generation failed for lecture {lecture_id}: {exc}")
+        finally:
+            with _AI_SUMMARY_PENDING_LOCK:
+                _AI_SUMMARY_PENDING.discard(pending_key)
+            reset_request_username(token)
+
+    threading.Thread(target=run, daemon=True).start()
 
 
 @router.post("/lectures/{lecture_id}/complete", response_model=LessonOut)
@@ -3251,6 +3367,7 @@ def _lesson_detail(lecture: Lecture) -> dict:
     return {
         **_lesson_item(lecture),
         "summary": lecture.summary or "",
+        "ai_summary": lecture.ai_summary or "",
         "source_type": lecture.source_type,
         "extraction_error": lecture.extraction_error,
         "local_only": lecture.local_only,

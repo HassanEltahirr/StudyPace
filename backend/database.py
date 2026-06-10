@@ -149,6 +149,8 @@ def ensure_schema_compatibility(bind=engine, schema: str | None = None) -> None:
                 f"ALTER TABLE IF EXISTS {_qualified_table('user_settings', schema)} ADD COLUMN IF NOT EXISTS phone_number VARCHAR(30) NOT NULL DEFAULT ''",
                 f"ALTER TABLE IF EXISTS {_qualified_table('user_settings', schema)} ADD COLUMN IF NOT EXISTS call_reminder_enabled BOOLEAN NOT NULL DEFAULT false",
                 f"ALTER TABLE IF EXISTS {_qualified_table('user_settings', schema)} ADD COLUMN IF NOT EXISTS call_reminder_hour INTEGER NOT NULL DEFAULT 8",
+                f"ALTER TABLE IF EXISTS {_qualified_table('lectures', schema)} ADD COLUMN IF NOT EXISTS ai_summary TEXT NOT NULL DEFAULT ''",
+                f"ALTER TABLE IF EXISTS {_qualified_table('lectures', schema)} ADD COLUMN IF NOT EXISTS video_recs_json TEXT NOT NULL DEFAULT ''",
             ]
             for statement in statements:
                 connection.execute(text(statement))
@@ -164,6 +166,10 @@ def ensure_schema_compatibility(bind=engine, schema: str | None = None) -> None:
                 ("phone_number", "VARCHAR(30) NOT NULL DEFAULT ''"),
                 ("call_reminder_enabled", f"BOOLEAN NOT NULL DEFAULT {bool_default}"),
                 ("call_reminder_hour", "INTEGER NOT NULL DEFAULT 8"),
+            ],
+            "lectures": [
+                ("ai_summary", "TEXT NOT NULL DEFAULT ''"),
+                ("video_recs_json", "TEXT NOT NULL DEFAULT ''"),
             ],
         }
 

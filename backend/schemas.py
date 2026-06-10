@@ -216,6 +216,7 @@ class LessonOut(BaseModel):
     source_type: str
     status: str
     summary: str
+    ai_summary: str = ""
     key_concepts: list[str]
     learning_objectives: list[str]
     extraction_error: str

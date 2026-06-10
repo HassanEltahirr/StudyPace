@@ -9,6 +9,7 @@ export default function Lesson() {
   const planDateParam = validPlanDate(searchParams.get('plan_date'))
   const [lesson, setLesson] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [aiUnavailable, setAiUnavailable] = useState(false)
   const [nextStep, setNextStep] = useState({
     loading: true,
     planActive: false,
@@ -127,10 +128,341 @@ export default function Lesson() {
         </section>
       )}
 
+      <DeckSummary lesson={lesson} onUnavailable={() => setAiUnavailable(true)} />
+
       <LectureSlides slides={lesson.slides} />
 
       <PlanCompletion nextStep={nextStep} lesson={lesson} planDate={planDateParam} onLessonComplete={setLesson} />
+
+      {lesson.mastery_score >= 0.8 && !aiUnavailable && <TestYourself lesson={lesson} />}
+      {lesson.mastery_score >= 0.8 && <LectureVideos lectureId={lesson.id} />}
     </article>
+  )
+}
+
+function DeckSummary({ lesson, onUnavailable }) {
+  const [summary, setSummary] = useState(lesson.ai_summary || '')
+  const [status, setStatus] = useState(lesson.ai_summary ? 'ready' : 'pending')
+
+  useEffect(() => {
+    if (lesson.ai_summary) {
+      setSummary(lesson.ai_summary)
+      setStatus('ready')
+      return undefined
+    }
+    let active = true
+    let timer = null
+    let tries = 0
+
+    function poll() {
+      api.getLessonAiSummary(lesson.id)
+        .then(result => {
+          if (!active) return
+          if (result.status === 'ready' && result.summary) {
+            setSummary(result.summary)
+            setStatus('ready')
+            return
+          }
+          if (result.status === 'unavailable') {
+            setStatus('unavailable')
+            onUnavailable?.()
+            return
+          }
+          if (tries >= 8) {
+            setStatus('unavailable')
+            return
+          }
+          tries += 1
+          setStatus('pending')
+          timer = setTimeout(poll, 5000)
+        })
+        .catch(() => {
+          if (active) setStatus('unavailable')
+        })
+    }
+    poll()
+
+    return () => {
+      active = false
+      if (timer) clearTimeout(timer)
+    }
+  }, [lesson.id, lesson.ai_summary])
+
+  if (status === 'unavailable') return null
+
+  const { bullets, formulas } = parseDeckSummary(summary)
+
+  return (
+    <section className="border-t border-[var(--border)] py-7">
+      <p className="eyebrow text-[var(--accent)]">Before you start</p>
+      <h2 className="mt-2 section-title text-2xl">Deck summary</h2>
+      {status === 'pending' ? (
+        <p className="mt-4 text-sm font-semibold text-[var(--text-faint)]">Preparing the summary...</p>
+      ) : (
+        <>
+          <ul className="reading-content mt-4 space-y-2">
+            {bullets.map((bullet, index) => <li key={index}>{bullet}</li>)}
+          </ul>
+          {formulas.length > 0 && (
+            <div className="surface-soft mt-4 p-4">
+              <p className="eyebrow">Key formula</p>
+              <p className="mt-2 whitespace-pre-wrap font-mono text-sm leading-6 text-[var(--text)]">
+                {formulas.join('\n')}
+              </p>
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  )
+}
+
+function parseDeckSummary(text = '') {
+  const bullets = []
+  const formulas = []
+  let inFormulaBlock = false
+
+  for (const rawLine of String(text).replace(/\r\n/g, '\n').split('\n')) {
+    const line = rawLine.trim()
+    if (!line) continue
+    const unbulleted = line.replace(/^[-•*]\s*/, '')
+    if (/^\*{0,2}key formulas?\b/i.test(unbulleted)) {
+      inFormulaBlock = true
+      const rest = cleanInlineMarkdown(unbulleted.replace(/^\*{0,2}key formulas?:?\*{0,2}\s*/i, ''))
+      if (rest) formulas.push(rest)
+      continue
+    }
+    if (inFormulaBlock) {
+      formulas.push(cleanInlineMarkdown(unbulleted))
+      continue
+    }
+    const bullet = line.match(/^[-•*]\s+(.+)$/)
+    if (bullet) bullets.push(cleanInlineMarkdown(bullet[1]))
+    else bullets.push(cleanInlineMarkdown(line))
+  }
+
+  return { bullets, formulas }
+}
+
+const PRACTICE_DIFFICULTIES = [
+  { value: 'easy', label: 'Easy' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'hard', label: 'Hard' },
+]
+
+const PRACTICE_COUNTS = [3, 5, 10]
+
+function TestYourself({ lesson }) {
+  const [difficulty, setDifficulty] = useState('medium')
+  const [count, setCount] = useState(5)
+  const [questions, setQuestions] = useState([])
+  const [answers, setAnswers] = useState({})
+  const [checked, setChecked] = useState({})
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  async function generate() {
+    if (loading) return
+    setLoading(true)
+    setError('')
+    setQuestions([])
+    setAnswers({})
+    setChecked({})
+    try {
+      const result = await api.generatePracticeExam(lesson.id, { difficulty, count })
+      setQuestions(result.questions || [])
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const checkedCount = Object.keys(checked).length
+  const correctCount = questions.filter((question, index) => checked[index] && answers[index] === question.correct).length
+
+  return (
+    <section className="border-t border-[var(--border)] py-7">
+      <p className="eyebrow text-[var(--accent)]">Test yourself</p>
+      <h2 className="mt-2 section-title text-2xl">Exam-style practice</h2>
+      <p className="mt-2 text-sm font-medium leading-6 text-[var(--text-muted)]">
+        Calculation and application questions written at final-exam level for this deck.
+      </p>
+
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        {PRACTICE_DIFFICULTIES.map(option => (
+          <button
+            key={option.value}
+            type="button"
+            className={`rounded-lg border px-4 py-2 text-sm font-semibold transition ${
+              difficulty === option.value
+                ? 'border-[var(--accent)] text-[var(--accent)]'
+                : 'border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--border-strong)] hover:text-[var(--text)]'
+            }`}
+            style={difficulty === option.value ? { background: 'color-mix(in srgb, var(--accent) 8%, var(--surface))' } : undefined}
+            onClick={() => setDifficulty(option.value)}
+          >
+            {option.label}
+          </button>
+        ))}
+        <span className="mx-1 h-6 w-px bg-[var(--border)]" aria-hidden="true" />
+        {PRACTICE_COUNTS.map(option => (
+          <button
+            key={option}
+            type="button"
+            className={`rounded-lg border px-4 py-2 text-sm font-semibold transition ${
+              count === option
+                ? 'border-[var(--accent)] text-[var(--accent)]'
+                : 'border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--border-strong)] hover:text-[var(--text)]'
+            }`}
+            style={count === option ? { background: 'color-mix(in srgb, var(--accent) 8%, var(--surface))' } : undefined}
+            onClick={() => setCount(option)}
+          >
+            {option} questions
+          </button>
+        ))}
+        <button type="button" className="btn-primary" disabled={loading} onClick={generate}>
+          {loading ? 'Writing questions...' : questions.length ? 'New questions' : 'Test yourself'}
+        </button>
+      </div>
+
+      {error && (
+        <p className="mt-3 text-sm font-semibold text-rose-300">{error}</p>
+      )}
+
+      {questions.length > 0 && (
+        <div className="mt-5 space-y-4">
+          {questions.map((question, index) => (
+            <PracticeExamQuestion
+              key={index}
+              question={question}
+              index={index}
+              selected={answers[index]}
+              isChecked={Boolean(checked[index])}
+              onSelect={choice => setAnswers(prev => ({ ...prev, [index]: choice }))}
+              onCheck={() => setChecked(prev => ({ ...prev, [index]: true }))}
+            />
+          ))}
+          {checkedCount === questions.length && (
+            <p className="text-sm font-semibold text-[var(--text-muted)]">
+              {correctCount} of {questions.length} correct on {difficulty}.
+            </p>
+          )}
+        </div>
+      )}
+    </section>
+  )
+}
+
+function PracticeExamQuestion({ question, index, selected, isChecked, onSelect, onCheck }) {
+  return (
+    <article className="surface p-4">
+      <p className="eyebrow">Question {index + 1}</p>
+      <h3 className="mt-2 text-base font-semibold leading-7 text-[var(--text)]">{question.question}</h3>
+      <div className="mt-3 space-y-2">
+        {question.choices.map((choice, choiceIndex) => (
+          <button
+            key={choiceIndex}
+            type="button"
+            disabled={isChecked}
+            className={`w-full rounded-lg border p-3 text-left text-sm font-semibold transition ${practiceChoiceClass(choiceIndex, selected, isChecked, question.correct)}`}
+            style={practiceChoiceStyle(choiceIndex, selected, isChecked, question.correct)}
+            onClick={() => onSelect(choiceIndex)}
+          >
+            {choice}
+          </button>
+        ))}
+      </div>
+      {!isChecked ? (
+        <button
+          type="button"
+          className="btn-primary mt-3"
+          disabled={selected === undefined}
+          onClick={onCheck}
+        >
+          Check answer
+        </button>
+      ) : (
+        <div className="surface-soft mt-3 p-3">
+          <p className={`text-sm font-semibold ${selected === question.correct ? 'text-[var(--accent)]' : 'text-rose-300'}`}>
+            {selected === question.correct ? 'Correct.' : 'Not quite.'}
+          </p>
+          <p className="mt-1 text-sm font-medium leading-6 text-[var(--text-muted)]">{question.explanation}</p>
+        </div>
+      )}
+    </article>
+  )
+}
+
+function practiceChoiceClass(choiceIndex, selected, isChecked, correct) {
+  if (isChecked) {
+    if (choiceIndex === correct) return 'border-[var(--accent)] text-[var(--text)]'
+    if (choiceIndex === selected) return 'border-rose-400/60 text-rose-200'
+    return 'border-[var(--border)] text-[var(--text-faint)]'
+  }
+  return selected === choiceIndex
+    ? 'border-[var(--accent)] text-[var(--text)]'
+    : 'border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--border-strong)] hover:text-[var(--text)]'
+}
+
+function practiceChoiceStyle(choiceIndex, selected, isChecked, correct) {
+  if (isChecked && choiceIndex === correct) {
+    return { background: 'color-mix(in srgb, var(--accent) 8%, var(--surface))' }
+  }
+  if (!isChecked && selected === choiceIndex) {
+    return { background: 'color-mix(in srgb, var(--accent) 6%, var(--surface))' }
+  }
+  return undefined
+}
+
+function LectureVideos({ lectureId }) {
+  const [videos, setVideos] = useState(null)
+
+  useEffect(() => {
+    let active = true
+    api.getLessonVideos(lectureId)
+      .then(result => {
+        if (active) setVideos(result.videos || [])
+      })
+      .catch(() => {
+        if (active) setVideos([])
+      })
+    return () => {
+      active = false
+    }
+  }, [lectureId])
+
+  if (!videos?.length) return null
+
+  return (
+    <section className="border-t border-[var(--border)] py-7">
+      <p className="eyebrow text-[var(--accent)]">Keep learning</p>
+      <h2 className="mt-2 section-title text-2xl">Watch it explained</h2>
+      <div className="mt-4 grid gap-3 sm:grid-cols-3">
+        {videos.map(video => (
+          <a
+            key={video.video_id}
+            href={video.url}
+            target="_blank"
+            rel="noreferrer"
+            className="surface-soft block overflow-hidden transition hover:border-[var(--border-strong)]"
+          >
+            <img
+              src={video.thumbnail_url}
+              alt={video.title}
+              loading="lazy"
+              className="aspect-video w-full object-cover"
+            />
+            <div className="p-3">
+              <p className="truncate text-sm font-semibold text-[var(--text)]" title={video.title}>{video.title}</p>
+              <p className="mt-1 truncate text-xs font-medium text-[var(--text-faint)]">
+                {video.channel}{video.duration ? ` · ${video.duration}` : ''}
+              </p>
+            </div>
+          </a>
+        ))}
+      </div>
+    </section>
   )
 }
 

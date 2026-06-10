@@ -174,6 +174,8 @@ class Lecture(Base):
     source_type: Mapped[str] = mapped_column(String(20), default="manual")
     status: Mapped[str] = mapped_column(String(30), default="ready")
     summary: Mapped[str] = mapped_column(Text, default="")
+    ai_summary: Mapped[str] = mapped_column(Text, default="")
+    video_recs_json: Mapped[str] = mapped_column(Text, default="")
     key_concepts_json: Mapped[str] = mapped_column(Text, default="[]")
     learning_objectives_json: Mapped[str] = mapped_column(Text, default="[]")
     extraction_error: Mapped[str] = mapped_column(Text, default="")

@@ -8,10 +8,14 @@ let googleScriptPromise = null
 
 export default function Login() {
   const location = useLocation()
-  const requestedMode = new URLSearchParams(location.search).get('mode')
-  const [mode, setMode] = useState(requestedMode === 'register' ? 'register' : 'login')
+  const searchParams = new URLSearchParams(location.search)
+  const requestedMode = searchParams.get('mode')
+  const resetToken = searchParams.get('token') || ''
+  const isResetPath = location.pathname === '/reset-password'
+  const [mode, setMode] = useState(isResetPath ? 'reset' : requestedMode === 'register' ? 'register' : 'login')
   const [firstName, setFirstName] = useState('')
   const [lastName, setLastName] = useState('')
+  const [email, setEmail] = useState('')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
@@ -20,6 +24,7 @@ export default function Login() {
   const [googleClientId, setGoogleClientId] = useState('')
   const [googleReady, setGoogleReady] = useState(false)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
   const googleButtonRef = useRef(null)
   const navigate = useNavigate()
   const redirectTo = location.state?.from?.pathname && location.state.from.pathname !== '/'
@@ -27,8 +32,8 @@ export default function Login() {
     : '/today'
 
   useEffect(() => {
-    setMode(requestedMode === 'register' ? 'register' : 'login')
-  }, [requestedMode])
+    setMode(isResetPath ? 'reset' : requestedMode === 'register' ? 'register' : 'login')
+  }, [isResetPath, requestedMode])
 
   useEffect(() => {
     let cancelled = false
@@ -48,7 +53,7 @@ export default function Login() {
   }, [])
 
   useEffect(() => {
-    if (!googleClientId || !googleButtonRef.current) return undefined
+    if (!googleClientId || !googleButtonRef.current || mode === 'forgot' || mode === 'reset') return undefined
 
     let cancelled = false
     setGoogleReady(false)
@@ -76,11 +81,45 @@ export default function Login() {
     return () => {
       cancelled = true
     }
-  }, [googleClientId])
+  }, [googleClientId, mode])
 
   async function handleSubmit(e) {
     e.preventDefault()
     setError('')
+    setNotice('')
+    if (mode === 'forgot') {
+      setLoading(true)
+      try {
+        await api.forgotPassword({ email })
+        setNotice('If an account exists for that email, a reset link has been sent.')
+      } catch (e) {
+        setError(e.message || 'Could not send reset link.')
+      } finally {
+        setLoading(false)
+      }
+      return
+    }
+    if (mode === 'reset') {
+      if (!resetToken) {
+        setError('This reset link is missing a token.')
+        return
+      }
+      if (password !== confirmPassword) {
+        setError('Passwords do not match.')
+        return
+      }
+      setLoading(true)
+      try {
+        const { access_token } = await api.resetPassword({ token: resetToken, password })
+        setToken(access_token)
+        navigate(redirectTo, { replace: true })
+      } catch (e) {
+        setError(e.message || 'Could not reset password.')
+      } finally {
+        setLoading(false)
+      }
+      return
+    }
     if (mode === 'register' && password !== confirmPassword) {
       setError('Passwords do not match.')
       return
@@ -93,7 +132,7 @@ export default function Login() {
     try {
       const action = mode === 'register' ? api.register : api.login
       const payload = mode === 'register'
-        ? { username, password, first_name: firstName, last_name: lastName }
+        ? { username, email, password, first_name: firstName, last_name: lastName }
         : { username, password }
       const { access_token } = await action(payload)
       setToken(access_token)
@@ -108,6 +147,7 @@ export default function Login() {
   function switchMode(nextMode) {
     setMode(nextMode)
     setError('')
+    setNotice('')
     setPassword('')
     setConfirmPassword('')
     if (nextMode === 'login') {
@@ -156,17 +196,13 @@ export default function Login() {
         </div>
 
         <h1 className="mb-1 text-lg font-black text-[var(--text)]">
-          {mode === 'register' ? 'Create account' : 'Sign in'}
+          {authTitle(mode)}
         </h1>
         <p className="text-sm text-slate-500 mb-6">
-          {mode === 'register'
-            ? 'Create a private local account for your study workspace.'
-            : googleClientId
-              ? 'Continue with Google, or use your local account.'
-              : 'Enter your username and password.'}
+          {authSubtitle(mode, googleClientId)}
         </p>
 
-        {googleClientId && (
+        {googleClientId && mode !== 'forgot' && mode !== 'reset' && (
           <>
             <div className="mb-5">
               <div
@@ -217,6 +253,38 @@ export default function Login() {
             </div>
           )}
 
+          {mode === 'register' && (
+            <label className="block">
+              <span className="text-xs font-black uppercase tracking-wide text-slate-400">Email</span>
+              <input
+                className="input mt-1"
+                type="email"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                placeholder="you@example.com"
+                autoComplete="email"
+                required
+              />
+            </label>
+          )}
+
+          {mode === 'forgot' && (
+            <label className="block">
+              <span className="text-xs font-black uppercase tracking-wide text-slate-400">Email</span>
+              <input
+                className="input mt-1"
+                type="email"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                placeholder="you@example.com"
+                autoComplete="email"
+                autoFocus
+                required
+              />
+            </label>
+          )}
+
+          {mode !== 'forgot' && mode !== 'reset' && (
           <label className="block">
             <span className="text-xs font-black uppercase tracking-wide text-slate-400">Username</span>
             <input
@@ -229,21 +297,36 @@ export default function Login() {
               required
             />
           </label>
+          )}
 
+          {mode !== 'forgot' && (
           <label className="block">
-            <span className="text-xs font-black uppercase tracking-wide text-slate-400">Password</span>
+            <span className="text-xs font-black uppercase tracking-wide text-slate-400">
+              {mode === 'reset' ? 'New password' : 'Password'}
+            </span>
             <input
               className="input mt-1"
               type="password"
               value={password}
               onChange={e => setPassword(e.target.value)}
               placeholder="••••••••"
-              autoComplete={mode === 'register' ? 'new-password' : 'current-password'}
+              autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
               required
             />
           </label>
+          )}
 
-          {mode === 'register' && (
+          {mode === 'login' && (
+            <button
+              type="button"
+              className="-mt-2 text-sm font-semibold text-[var(--accent)] transition hover:text-[var(--text)]"
+              onClick={() => switchMode('forgot')}
+            >
+              Forgot password?
+            </button>
+          )}
+
+          {(mode === 'register' || mode === 'reset') && (
             <label className="block">
               <span className="text-xs font-black uppercase tracking-wide text-slate-400">Confirm password</span>
               <input
@@ -258,6 +341,12 @@ export default function Login() {
             </label>
           )}
 
+          {notice && (
+            <p className="rounded-2xl bg-emerald-50 border-2 border-emerald-100 p-3 text-sm font-semibold text-emerald-700 dark:bg-emerald-900/20 dark:border-emerald-800 dark:text-emerald-300">
+              {notice}
+            </p>
+          )}
+
           {error && (
             <p className="rounded-2xl bg-rose-50 border-2 border-rose-100 p-3 text-sm font-semibold text-rose-700 dark:bg-rose-900/20 dark:border-rose-800 dark:text-rose-300">
               {error}
@@ -267,9 +356,9 @@ export default function Login() {
           <button
             type="submit"
             className="btn-primary w-full"
-            disabled={loading || !username || !password || (mode === 'register' && (!firstName.trim() || !lastName.trim() || !confirmPassword))}
+            disabled={submitDisabled({ loading, mode, username, email, password, firstName, lastName, confirmPassword })}
           >
-            {loading ? (mode === 'register' ? 'Creating account…' : 'Signing in…') : (mode === 'register' ? 'Create account' : 'Sign in')}
+            {loading ? loadingLabel(mode) : submitLabel(mode)}
           </button>
         </form>
 
@@ -278,11 +367,49 @@ export default function Login() {
           type="button"
           onClick={() => switchMode(mode === 'register' ? 'login' : 'register')}
         >
-          {mode === 'register' ? 'I already have an account' : 'Create a new account'}
+          {mode === 'login' ? 'Create a new account' : 'Back to sign in'}
         </button>
       </div>
     </div>
   )
+}
+
+function authTitle(mode) {
+  if (mode === 'register') return 'Create account'
+  if (mode === 'forgot') return 'Reset password'
+  if (mode === 'reset') return 'Choose a new password'
+  return 'Sign in'
+}
+
+function authSubtitle(mode, googleClientId) {
+  if (mode === 'register') return 'Create a private account for your study workspace.'
+  if (mode === 'forgot') return 'Enter your email and StudyPace will send a reset link.'
+  if (mode === 'reset') return 'Set a new password for your StudyPace account.'
+  return googleClientId ? 'Continue with Google, or use your local account.' : 'Enter your username and password.'
+}
+
+function submitDisabled({ loading, mode, username, email, password, firstName, lastName, confirmPassword }) {
+  if (loading) return true
+  if (mode === 'forgot') return !email.trim()
+  if (mode === 'reset') return !password || !confirmPassword
+  if (mode === 'register') {
+    return !username.trim() || !email.trim() || !password || !firstName.trim() || !lastName.trim() || !confirmPassword
+  }
+  return !username.trim() || !password
+}
+
+function submitLabel(mode) {
+  if (mode === 'register') return 'Create account'
+  if (mode === 'forgot') return 'Send reset link'
+  if (mode === 'reset') return 'Reset password'
+  return 'Sign in'
+}
+
+function loadingLabel(mode) {
+  if (mode === 'register') return 'Creating account...'
+  if (mode === 'forgot') return 'Sending link...'
+  if (mode === 'reset') return 'Resetting password...'
+  return 'Signing in...'
 }
 
 function loadGoogleScript() {

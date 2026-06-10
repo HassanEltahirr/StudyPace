@@ -38,7 +38,7 @@ export default function App() {
   })
   const location = useLocation()
   const hasToken = Boolean(getToken())
-  const isLogin = location.pathname === '/login'
+  const isLogin = location.pathname === '/login' || location.pathname === '/reset-password'
   const isLanding = location.pathname === '/' && !hasToken
   const usePageHeader = location.pathname.startsWith('/grades')
 
@@ -151,6 +151,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={hasToken ? <Navigate to="/today" replace /> : <Landing />} />
             <Route path="/login" element={<Login />} />
+            <Route path="/reset-password" element={<Login />} />
             <Route path="/*" element={
               <RequireAuth>
                 <Routes>

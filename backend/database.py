@@ -144,8 +144,11 @@ def ensure_schema_compatibility(bind=engine, schema: str | None = None) -> None:
         dialect = connection.dialect.name
         if dialect == "postgresql":
             statements = [
+                f"ALTER TABLE IF EXISTS {_qualified_table('users', schema)} ADD COLUMN IF NOT EXISTS email VARCHAR(255)",
                 f"ALTER TABLE IF EXISTS {_qualified_table('users', schema)} ADD COLUMN IF NOT EXISTS first_name VARCHAR(80) NOT NULL DEFAULT ''",
                 f"ALTER TABLE IF EXISTS {_qualified_table('users', schema)} ADD COLUMN IF NOT EXISTS last_name VARCHAR(80) NOT NULL DEFAULT ''",
+                f"ALTER TABLE IF EXISTS {_qualified_table('users', schema)} ADD COLUMN IF NOT EXISTS password_reset_token_hash VARCHAR(128) NOT NULL DEFAULT ''",
+                f"ALTER TABLE IF EXISTS {_qualified_table('users', schema)} ADD COLUMN IF NOT EXISTS password_reset_expires_at TIMESTAMP",
                 f"ALTER TABLE IF EXISTS {_qualified_table('user_settings', schema)} ADD COLUMN IF NOT EXISTS phone_number VARCHAR(30) NOT NULL DEFAULT ''",
                 f"ALTER TABLE IF EXISTS {_qualified_table('user_settings', schema)} ADD COLUMN IF NOT EXISTS call_reminder_enabled BOOLEAN NOT NULL DEFAULT false",
                 f"ALTER TABLE IF EXISTS {_qualified_table('user_settings', schema)} ADD COLUMN IF NOT EXISTS call_reminder_hour INTEGER NOT NULL DEFAULT 8",
@@ -154,13 +157,24 @@ def ensure_schema_compatibility(bind=engine, schema: str | None = None) -> None:
             ]
             for statement in statements:
                 connection.execute(text(statement))
+            index_name = _quote_ident(f"ix_{schema or 'public'}_users_email_unique")
+            connection.execute(
+                text(
+                    f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} "
+                    f"ON {_qualified_table('users', schema)} (email) "
+                    "WHERE email IS NOT NULL AND email <> ''"
+                )
+            )
             return
 
         bool_default = "false" if dialect == "postgresql" else "0"
         migrations = {
             "users": [
+                ("email", "VARCHAR(255)"),
                 ("first_name", "VARCHAR(80) NOT NULL DEFAULT ''"),
                 ("last_name", "VARCHAR(80) NOT NULL DEFAULT ''"),
+                ("password_reset_token_hash", "VARCHAR(128) NOT NULL DEFAULT ''"),
+                ("password_reset_expires_at", "DATETIME"),
             ],
             "user_settings": [
                 ("phone_number", "VARCHAR(30) NOT NULL DEFAULT ''"),
@@ -183,6 +197,13 @@ def ensure_schema_compatibility(bind=engine, schema: str | None = None) -> None:
                     connection.execute(
                         text(f"ALTER TABLE {qualified} ADD COLUMN {column_name} {column_definition}")
                     )
+        if "email" in _columns_for(connection, "users", schema):
+            connection.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_email_unique "
+                    "ON users(email) WHERE email IS NOT NULL AND email <> ''"
+                )
+            )
     except Exception as exc:
         exc_info = (type(exc), exc, exc.__traceback__)
         raise

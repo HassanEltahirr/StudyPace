@@ -241,6 +241,8 @@ export const api = {
   authConfig: () => publicReq('GET', '/auth/config'),
   login: (data) => publicReq('POST', '/auth/login', data),
   register: (data) => publicReq('POST', '/auth/register', data),
+  forgotPassword: (data) => publicReq('POST', '/auth/forgot-password', data),
+  resetPassword: (data) => publicReq('POST', '/auth/reset-password', data),
   googleLogin: (data) => publicReq('POST', '/auth/google', data),
   me: () => req('GET', '/auth/me', null, { cacheMs: 30000 }),
 

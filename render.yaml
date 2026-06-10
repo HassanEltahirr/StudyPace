@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: studypace
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: starter
+    region: oregon
+    healthCheckPath: /ready
+    envVars:
+      - key: STUDYPACE_ENV
+        value: production
+      - key: SECRET_KEY
+        generateValue: true
+      - key: STUDYPACE_LOCAL_ADMIN_ENABLED
+        value: "false"
+      - key: STUDYPACE_DATA_DIR
+        value: /app/backend/data
+      - key: STUDYPACE_STATIC_DIR
+        value: /app/frontend-dist
+      - key: CORS_ORIGINS
+        value: https://studypace.onrender.com
+      - key: MAX_UPLOAD_MB
+        value: "50"
+      - key: PORT
+        value: "10000"
+    disk:
+      name: studypace-data
+      mountPath: /app/backend/data
+      sizeGB: 10

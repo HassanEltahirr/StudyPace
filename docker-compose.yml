@@ -1,0 +1,37 @@
+version: "3.9"
+
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      STUDYPACE_ENV: ${STUDYPACE_ENV:-development}
+      DATABASE_URL: ${DATABASE_URL:-sqlite:////app/data/studypace_local.db}
+      STUDYPACE_DATA_DIR: ${STUDYPACE_DATA_DIR:-/app/data}
+      SECRET_KEY: ${SECRET_KEY:-dev-only-secret-change-in-production-must-be-32chars!}
+      STUDYPACE_USERNAME: ${STUDYPACE_USERNAME:-admin}
+      STUDYPACE_PASSWORD: ${STUDYPACE_PASSWORD:-studypace}
+      STUDYPACE_LOCAL_ADMIN_ENABLED: ${STUDYPACE_LOCAL_ADMIN_ENABLED:-true}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-50}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-phi3:mini}
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./backend/data:/app/data
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+    environment:
+      VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+    restart: unless-stopped

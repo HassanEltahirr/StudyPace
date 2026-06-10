@@ -1,0 +1,16 @@
+.env
+.env.*
+.runtime-secret
+*.log
+.DS_Store
+
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+backend/__pycache__/
+backend/**/__pycache__/
+backend/*.db
+backend/data/
+
+design-audit-shots/

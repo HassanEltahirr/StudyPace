@@ -1,0 +1,53 @@
+# Environment / secrets
+.env
+.env.*
+!.env.example
+.runtime-secret
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+.venv/
+venv/
+env/
+
+# Database files — never commit the live DB
+backend/data/studypace_local.db
+backend/data/*.db
+backend/*.db
+backend/data/user_workspaces/
+
+# Uploaded material and generated caches
+backend/data/source_material/
+backend/data/slide_images/
+
+# Node
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.vscode/
+.idea/
+.claude/
+*.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*
+
+# Local design/audit artifacts
+design-audit-shots/

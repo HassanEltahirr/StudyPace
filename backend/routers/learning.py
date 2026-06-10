@@ -4,6 +4,7 @@ import base64
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 import json
+import logging
 import math
 import re
 import shutil
@@ -72,6 +73,7 @@ except Exception:  # pragma: no cover - optional runtime dependency
     fitz = None
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 OLLAMA_FAST_BUDGET_SECONDS = 0.6
 OLLAMA_SUMMARY_BUDGET_SECONDS = 0.9
@@ -299,62 +301,70 @@ def upload_lecture(course_id: int, payload: LectureUpload, db: Session = Depends
         estimated_minutes=generated.estimated_minutes,
         local_only=True,
     )
-    db.add(lecture)
-    db.flush()
-    _store_source_material(lecture, content)
+    try:
+        db.add(lecture)
+        db.flush()
+        _store_source_material(lecture, content)
 
-    for extracted in slides:
-        db.add(Slide(
-            lecture_id=lecture.id,
-            slide_number=extracted.slide_number,
-            title=extracted.title[:240],
-            text=extracted.text,
-            content_tags_json=json.dumps(extracted.content_tags),
-        ))
+        for extracted in slides:
+            db.add(Slide(
+                lecture_id=lecture.id,
+                slide_number=extracted.slide_number,
+                title=extracted.title[:240],
+                text=extracted.text,
+                content_tags_json=json.dumps(extracted.content_tags),
+            ))
 
-    for card in generated.flashcards:
-        db.add(Flashcard(
-            lecture_id=lecture.id,
-            topic_id=topic.id,
-            slide_number=card["slide_number"],
-            front=card["front"],
-            back=card["back"],
-        ))
-
-    for generated_question in generated.questions:
-        options = generated_question["options"]
-        lesson_q = LessonQuestion(
-            lecture_id=lecture.id,
-            topic_id=topic.id,
-            slide_number=generated_question["slide_number"],
-            prompt=generated_question["prompt"],
-            option_a=options["a"],
-            option_b=options["b"],
-            option_c=options["c"],
-            option_d=options["d"],
-            correct=generated_question["correct"],
-            explanation=generated_question["explanation"],
-            wrong_explanations_json=json.dumps(generated_question["wrong_explanations"]),
-            difficulty=generated_question["difficulty"],
-            topic_tag=generated_question["topic_tag"][:160],
-        )
-        db.add(lesson_q)
-        if _generated_question_is_mcq(generated_question):
-            db.add(QuizQuestion(
+        for card in generated.flashcards:
+            db.add(Flashcard(
+                lecture_id=lecture.id,
                 topic_id=topic.id,
-                question=f"{generated_question['prompt']} (cite: slide {generated_question['slide_number']})",
+                slide_number=card["slide_number"],
+                front=card["front"],
+                back=card["back"],
+            ))
+
+        for generated_question in generated.questions:
+            options = generated_question["options"]
+            lesson_q = LessonQuestion(
+                lecture_id=lecture.id,
+                topic_id=topic.id,
+                slide_number=generated_question["slide_number"],
+                prompt=generated_question["prompt"],
                 option_a=options["a"],
                 option_b=options["b"],
                 option_c=options["c"],
                 option_d=options["d"],
                 correct=generated_question["correct"],
                 explanation=generated_question["explanation"],
-            ))
+                wrong_explanations_json=json.dumps(generated_question["wrong_explanations"]),
+                difficulty=generated_question["difficulty"],
+                topic_tag=generated_question["topic_tag"][:160],
+            )
+            db.add(lesson_q)
+            if _generated_question_is_mcq(generated_question):
+                db.add(QuizQuestion(
+                    topic_id=topic.id,
+                    question=f"{generated_question['prompt']} (cite: slide {generated_question['slide_number']})",
+                    option_a=options["a"],
+                    option_b=options["b"],
+                    option_c=options["c"],
+                    option_d=options["d"],
+                    correct=generated_question["correct"],
+                    explanation=generated_question["explanation"],
+                ))
 
-    _award_badge(db, "first_upload", "First upload", "Created a lesson from local slide content.")
+        _award_badge(db, "first_upload", "First upload", "Created a lesson from local slide content.")
 
-    lecture_id = lecture.id
-    db.commit()
+        lecture_id = lecture.id
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Lecture upload failed while saving %s for course %s", payload.filename, course_id)
+        raise HTTPException(
+            500,
+            "StudyPace could read this file, but saving the lesson failed. Restart the backend and try again.",
+        ) from exc
     clear_workspace_cache()
     db.expire_all()
     _generate_ai_summary_in_background(lecture_id)

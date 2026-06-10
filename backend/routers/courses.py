@@ -37,8 +37,9 @@ def get_course(course_id: int):
 def create_course(body: CourseCreate, db: Session = Depends(get_db)):
     c = Course(**body.model_dump())
     db.add(c)
-    db.commit()
+    db.flush()
     course_id = c.id
+    db.commit()
     db.expire_all()
     c = db.query(Course).filter(Course.id == course_id).first()
     clear_workspace_cache()

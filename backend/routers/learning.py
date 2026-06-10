@@ -59,6 +59,7 @@ from schemas import (
     LessonQuizResult,
 )
 from services.claude_ai import generate_practice_mcqs as generate_claude_practice_mcqs
+from services.openai_ai import generate_practice_mcqs_openai, openai_available
 from services.gemini_ai import gemini_available, generate_deck_summary, generate_practice_questions
 from services.local_ai import LocalAI
 from services.object_storage import content_type_for_filename, object_storage, workspace_object_key
@@ -416,23 +417,27 @@ def lecture_practice_exam(lecture_id: int, payload: dict, db: Session = Depends(
     slide_texts = _practice_slide_texts_for_lecture(lecture, slides)
     title = _lecture_display_title(lecture)
 
-    # Race both providers instead of trying them serially: Claude (better
-    # questions) is preferred, Gemini is already finished by the time we fall
-    # back to it, so a Claude miss costs ~nothing extra.
-    pool = ThreadPoolExecutor(max_workers=2)
-    claude_future = pool.submit(generate_claude_practice_mcqs, title, slide_texts, difficulty, count)
-    gemini_future = pool.submit(generate_practice_questions, title, slide_texts, difficulty=difficulty, count=count)
+    # Race the configured providers instead of trying them serially. Preference
+    # order: OpenAI-compatible router (subscription-backed, effectively free)
+    # > Claude API > Gemini. The losers are already finished by the time we
+    # fall back to them, so a miss costs ~nothing extra.
+    pool = ThreadPoolExecutor(max_workers=3)
+    futures = []
+    if openai_available():
+        futures.append(pool.submit(generate_practice_mcqs_openai, title, slide_texts, difficulty, count))
+    futures.append(pool.submit(generate_claude_practice_mcqs, title, slide_texts, difficulty, count))
+    futures.append(pool.submit(generate_practice_questions, title, slide_texts, difficulty=difficulty, count=count))
     pool.shutdown(wait=False)
 
-    try:
-        questions = claude_future.result(timeout=20)
-    except Exception:
-        questions = None
-    if not questions:
+    questions = None
+    deadline = time.monotonic() + 30  # shared budget so timeouts don't stack
+    for future in futures:
         try:
-            questions = gemini_future.result(timeout=20)
+            questions = future.result(timeout=max(1.0, deadline - time.monotonic()))
         except Exception:
             questions = None
+        if questions:
+            break
     if not questions:
         questions = _fallback_practice_questions(lecture, slides, count=count)
     if not questions:

@@ -334,7 +334,7 @@ def _generated_mcqs(slides: list[ExtractedSlide], concepts: list[str]) -> list[d
         if _is_question_like(topic) or _is_fragment(topic):
             continue
 
-        exam_question = _fact_mcq(slide, topic, pool) or _exam_mcq(slide, topic)
+        exam_question = _exam_mcq(slide, topic)
         if not exam_question:
             continue
 
@@ -557,44 +557,7 @@ def _practice_kind_label(value) -> str:
 
 
 def _fact_mcq(slide: ExtractedSlide, topic: str, pool: list[dict]) -> dict | None:
-    correct = _best_sentence(slide.text) or _definition_line(slide.text)
-    correct = _clean_sentence(correct)
-    if (
-        not correct
-        or _looks_like_code(correct)
-        or _is_question_like(correct)
-        or _is_fragment(correct)
-        or not _is_study_statement(correct)
-    ):
-        return None
-
-    distractors = _distractors(correct, slide.slide_number, pool)
-    if len(distractors) < 3:
-        return None
-
-    prompt_topic = "" if topic.lower().startswith("slide ") else f" about {topic}"
-    return _scenario_question(
-        slide,
-        topic,
-        difficulty=_difficulty(slide.text),
-        bloom="Understanding",
-        concept=topic,
-        objective="Recognize the key claim from the cited slide.",
-        prompt=f"Which statement best matches slide {slide.slide_number}'s key point{prompt_topic}?",
-        correct="a",
-        options={
-            "a": _shorten_phrase(correct, 190),
-            "b": _shorten_phrase(distractors[0]["text"], 190),
-            "c": _shorten_phrase(distractors[1]["text"], 190),
-            "d": _shorten_phrase(distractors[2]["text"], 190),
-        },
-        wrong={
-            "b": distractors[0]["why"],
-            "c": distractors[1]["why"],
-            "d": distractors[2]["why"],
-        },
-        explanation=f"Slide {slide.slide_number} supports option a: {correct}",
-    )
+    return None
 
 
 def _exam_mcq(slide: ExtractedSlide, topic: str) -> dict | None:
@@ -701,28 +664,7 @@ def _exam_mcq(slide: ExtractedSlide, topic: str) -> dict | None:
             explanation=f"Slide {slide.slide_number} is testing a rule or invariant around {topic}. The exam move is to check that condition in the new situation.",
         )
 
-    return _scenario_question(
-        slide,
-        topic,
-        difficulty=_difficulty(slide.text),
-        bloom="Understanding",
-        concept=topic,
-        objective="Explain the mechanism and apply it to a small scenario.",
-        prompt=f"A student has read the slide on {topic} but must answer a new exam scenario. Which response shows real understanding?",
-        correct="a",
-        options={
-            "a": "Explain the mechanism, apply it to the scenario, and justify the outcome using the lecture constraints.",
-            "b": "Repeat one phrase from the slide without applying it.",
-            "c": "Use outside facts first and only mention the course material if there is time.",
-            "d": "Answer with a definition even if the prompt asks for a prediction or decision.",
-        },
-        wrong={
-            "b": "The practice goal is retrieval plus application, not phrase matching.",
-            "c": "StudyPace keeps answers grounded in the uploaded course material first.",
-            "d": "Definitions are not enough when the prompt asks for reasoning.",
-        },
-        explanation=f"Slide {slide.slide_number} gives the source concept, but the exam skill is applying {topic} to a new situation with justification.",
-    )
+    return None
 
 
 def _scenario_question(

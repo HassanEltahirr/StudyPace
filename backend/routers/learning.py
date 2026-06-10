@@ -424,12 +424,12 @@ def lecture_practice_exam(lecture_id: int, payload: dict, db: Session = Depends(
     if not questions:
         questions = _fallback_practice_questions(lecture, slides, count=count)
     if not questions:
-        raise HTTPException(422, "This deck needs readable slide text or an AI summary before practice questions can be made.")
+        raise HTTPException(503, "The question writer is busy. Try again in a moment.")
     return {"lecture_id": lecture.id, "difficulty": difficulty, "questions": questions}
 
 
 def _fallback_practice_questions(lecture: Lecture, slides: list[Slide], count: int = 5) -> list[dict]:
-    """Return usable practice when Gemini is unavailable or returns bad JSON."""
+    """Return only previously saved real MCQs when Gemini returns bad JSON."""
     questions: list[dict] = []
     letter_to_index = {"a": 0, "b": 1, "c": 2, "d": 3}
 
@@ -449,34 +449,6 @@ def _fallback_practice_questions(lecture: Lecture, slides: list[Slide], count: i
         })
         if len(questions) >= count:
             return questions
-
-    review_points = _practice_review_points(lecture, slides)
-    distractors = [
-        "It is only a definition and does not affect problem solving.",
-        "It applies only when the variables are independent.",
-        "It removes the need to check the conditions in the problem.",
-        "It is mainly a notation change with no conceptual effect.",
-    ]
-    for index, point in enumerate(review_points):
-        clean_point = _clip(_clean_display_text(point), 180)
-        if len(clean_point) < 20:
-            continue
-        slide_hint = ""
-        if slides:
-            slide_hint = f" from slide {slides[min(index, len(slides) - 1)].slide_number}"
-        questions.append({
-            "question": f"Which statement best matches the key idea{slide_hint}?",
-            "choices": [
-                f"A) {clean_point}",
-                f"B) {distractors[index % len(distractors)]}",
-                f"C) {distractors[(index + 1) % len(distractors)]}",
-                f"D) {distractors[(index + 2) % len(distractors)]}",
-            ],
-            "correct": 0,
-            "explanation": "The correct choice is the one grounded in the lecture summary. The other options are common overgeneralizations.",
-        })
-        if len(questions) >= count:
-            break
     return questions
 
 
@@ -3910,13 +3882,26 @@ def _question_sort_key(question: LessonQuestion) -> tuple[int, int, int]:
 
 
 def _is_generated_lesson_mcq(question: LessonQuestion) -> bool:
-    return _question_type(question) == "generated_mcq"
+    if _question_type(question) != "generated_mcq":
+        return False
+    return _is_high_quality_lesson_mcq(question.prompt or "")
+
+
+def _is_high_quality_lesson_mcq(prompt: str) -> bool:
+    normalized = re.sub(r"\s+", " ", (prompt or "").strip().lower())
+    weak_patterns = (
+        "which statement best matches",
+        "has read the slide",
+        "shows real understanding",
+        "which response shows real understanding",
+    )
+    return bool(normalized) and not any(pattern in normalized for pattern in weak_patterns)
 
 
 def _generated_question_is_mcq(question: dict) -> bool:
     if question.get("question_type"):
-        return question["question_type"] == "generated_mcq"
-    return question.get("difficulty") in {"easy", "medium", "hard"}
+        return question["question_type"] == "generated_mcq" and _is_high_quality_lesson_mcq(question.get("prompt", ""))
+    return question.get("difficulty") in {"easy", "medium", "hard"} and _is_high_quality_lesson_mcq(question.get("prompt", ""))
 
 
 def _flashcard(card: Flashcard) -> dict:

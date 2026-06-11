@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 import json
 import logging
 import math
+import os
 import re
 import shutil
 import threading
@@ -398,9 +399,15 @@ def lecture_ai_summary(lecture_id: int, db: Session = Depends(get_db)):
     return {"status": "pending", "summary": ""}
 
 
+def practice_enabled() -> bool:
+    return os.getenv("STUDYPACE_PRACTICE_ENABLED", "true").strip().lower() not in {"0", "false", "no"}
+
+
 @router.post("/lectures/{lecture_id}/practice-exam")
 def lecture_practice_exam(lecture_id: int, payload: dict, db: Session = Depends(get_db)):
     """Generate Gulf-exam-style practice questions on demand. Never pregenerated."""
+    if not practice_enabled():
+        raise HTTPException(503, "Practice questions are temporarily unavailable.")
     lecture = _get_lecture(db, lecture_id)
 
     difficulty = str(payload.get("difficulty") or "medium").lower().strip()
@@ -699,6 +706,9 @@ def lecture_videos(lecture_id: int, db: Session = Depends(get_db)):
 
 _AI_SUMMARY_PENDING_LOCK = threading.Lock()
 _AI_SUMMARY_PENDING: set[tuple[str, int]] = set()
+# Shared queue instead of one thread per request: a rush of uploads waits its
+# turn rather than stacking hundreds of concurrent Gemini calls and threads.
+_AI_SUMMARY_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ai-summary")
 
 
 def _generate_ai_summary_in_background(lecture_id: int) -> None:
@@ -733,7 +743,7 @@ def _generate_ai_summary_in_background(lecture_id: int) -> None:
                 _AI_SUMMARY_PENDING.discard(pending_key)
             reset_request_username(token)
 
-    threading.Thread(target=run, daemon=True).start()
+    _AI_SUMMARY_EXECUTOR.submit(run)
 
 
 @router.post("/lectures/{lecture_id}/complete", response_model=LessonOut)
@@ -775,6 +785,11 @@ def complete_lecture_slides(lecture_id: int, db: Session = Depends(get_db)):
     return response
 
 
+# Slide ids are stable and rendered images never change, so let browsers keep
+# them — repeat lesson views then skip the network (and the PDF render) entirely.
+_SLIDE_IMAGE_HEADERS = {"Cache-Control": "private, max-age=604800, immutable"}
+
+
 @router.get("/slides/{slide_id}/image")
 def slide_image(slide_id: int, db: Session = Depends(get_db)):
     slide = (
@@ -789,7 +804,7 @@ def slide_image(slide_id: int, db: Session = Depends(get_db)):
     source = _source_material_path(slide.lecture)
     if source:
         image_path = _render_slide_image(source, slide.lecture_id, slide.slide_number)
-        return FileResponse(image_path, media_type="image/png")
+        return FileResponse(image_path, media_type="image/png", headers=_SLIDE_IMAGE_HEADERS)
 
     source_key = _source_material_object_key(slide.lecture)
     storage = object_storage()
@@ -798,12 +813,12 @@ def slide_image(slide_id: int, db: Session = Depends(get_db)):
 
     image_key = _slide_image_object_key(slide.lecture_id, slide.slide_number)
     if storage.exists(image_key):
-        return Response(storage.get_bytes(image_key), media_type="image/png")
+        return Response(storage.get_bytes(image_key), media_type="image/png", headers=_SLIDE_IMAGE_HEADERS)
 
     source_bytes = storage.get_bytes(source_key)
     image_bytes = _render_slide_image_bytes(source_bytes, slide.lecture.source_filename, slide.slide_number)
     storage.put_bytes(image_key, image_bytes, "image/png")
-    return Response(image_bytes, media_type="image/png")
+    return Response(image_bytes, media_type="image/png", headers=_SLIDE_IMAGE_HEADERS)
 
 
 @router.get("/lectures/{lecture_id}/questions")
@@ -3918,6 +3933,12 @@ def _source_material_path(lecture: Lecture | None) -> Path | None:
     return None
 
 
+# PDF rendering is CPU-bound; on a shared-cpu machine a burst of cold renders
+# would starve every other request. Queue them two at a time — cached images
+# (disk, R2, or browser) never touch this semaphore.
+_RENDER_SEMAPHORE = threading.BoundedSemaphore(2)
+
+
 def _render_slide_image(source: Path, lecture_id: int, slide_number: int) -> Path:
     if fitz is None:
         raise HTTPException(503, "Slide images need PyMuPDF in the backend runtime.")
@@ -3930,23 +3951,26 @@ def _render_slide_image(source: Path, lecture_id: int, slide_number: int) -> Pat
     if output.exists():
         return output
 
-    doc = None
-    try:
-        doc = fitz.open(str(source))
-        page_index = slide_number - 1
-        if page_index < 0 or page_index >= doc.page_count:
-            raise HTTPException(404, "Slide page was not found in the source PDF.")
-        page = doc.load_page(page_index)
-        pix = page.get_pixmap(matrix=fitz.Matrix(1.7, 1.7), alpha=False)
-        pix.save(str(output))
-        return output
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(500, "Could not render this slide image.") from exc
-    finally:
-        if doc is not None:
-            doc.close()
+    with _RENDER_SEMAPHORE:
+        if output.exists():
+            return output
+        doc = None
+        try:
+            doc = fitz.open(str(source))
+            page_index = slide_number - 1
+            if page_index < 0 or page_index >= doc.page_count:
+                raise HTTPException(404, "Slide page was not found in the source PDF.")
+            page = doc.load_page(page_index)
+            pix = page.get_pixmap(matrix=fitz.Matrix(1.7, 1.7), alpha=False)
+            pix.save(str(output))
+            return output
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(500, "Could not render this slide image.") from exc
+        finally:
+            if doc is not None:
+                doc.close()
 
 
 def _render_slide_image_bytes(source_bytes: bytes, source_filename: str, slide_number: int) -> bytes:
@@ -3955,22 +3979,23 @@ def _render_slide_image_bytes(source_bytes: bytes, source_filename: str, slide_n
     if Path(source_filename or "").suffix.lower() != ".pdf":
         raise HTTPException(404, "Slide images are available for PDF lectures only.")
 
-    doc = None
-    try:
-        doc = fitz.open(stream=source_bytes, filetype="pdf")
-        page_index = slide_number - 1
-        if page_index < 0 or page_index >= doc.page_count:
-            raise HTTPException(404, "Slide page was not found in the source PDF.")
-        page = doc.load_page(page_index)
-        pix = page.get_pixmap(matrix=fitz.Matrix(1.7, 1.7), alpha=False)
-        return pix.tobytes("png")
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(500, "Could not render this slide image.") from exc
-    finally:
-        if doc is not None:
-            doc.close()
+    with _RENDER_SEMAPHORE:
+        doc = None
+        try:
+            doc = fitz.open(stream=source_bytes, filetype="pdf")
+            page_index = slide_number - 1
+            if page_index < 0 or page_index >= doc.page_count:
+                raise HTTPException(404, "Slide page was not found in the source PDF.")
+            page = doc.load_page(page_index)
+            pix = page.get_pixmap(matrix=fitz.Matrix(1.7, 1.7), alpha=False)
+            return pix.tobytes("png")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(500, "Could not render this slide image.") from exc
+        finally:
+            if doc is not None:
+                doc.close()
 
 
 def _delete_stored_lecture_files(

@@ -56,8 +56,11 @@ _RATE_RULES = [
     ("/api/auth/register", 5, 60),
     ("/api/auth/login", 10, 60),
     ("/api/auth/google", 20, 60),
+    ("/api/auth/forgot-password", 5, 300),
+    ("/api/auth/reset-password", 10, 300),
     ("/api/learning/ai/", 20, 60),
 ]
+_RATE_STORE_MAX_KEYS = 20000
 
 
 class _RateLimitMiddleware(BaseHTTPMiddleware):
@@ -75,6 +78,8 @@ class _RateLimitMiddleware(BaseHTTPMiddleware):
                         status_code=429,
                     )
                 times.append(now)
+                if len(_rate_store) > _RATE_STORE_MAX_KEYS:
+                    _rate_store.clear()
                 _rate_store[key] = times
                 break
         return await call_next(request)

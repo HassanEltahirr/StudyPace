@@ -125,7 +125,11 @@ def forgot_password(body: ForgotPasswordBody, db: Session = Depends(get_auth_db)
         user.password_reset_token_hash = _hash_reset_token(token)
         user.password_reset_expires_at = datetime.utcnow() + timedelta(hours=1)
         db.commit()
-        send_password_reset_email(email, token)
+        # Send in the background: the response stays fast under load and its
+        # timing doesn't reveal whether the email is registered.
+        threading.Thread(
+            target=send_password_reset_email, args=(email, token), daemon=True
+        ).start()
     return {"ok": True}
 
 

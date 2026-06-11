@@ -3,6 +3,9 @@ import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { api, getToken } from '../api'
 import StudyCompletionInteraction from '../components/StudyCompletionInteraction'
 
+// Practice questions are hidden for the 250-user run; flip back to true to restore.
+const PRACTICE_ENABLED = false
+
 export default function Lesson() {
   const { lectureId } = useParams()
   const [searchParams] = useSearchParams()
@@ -134,7 +137,7 @@ export default function Lesson() {
 
       <PlanCompletion nextStep={nextStep} lesson={lesson} planDate={planDateParam} onLessonComplete={setLesson} />
 
-      {!aiUnavailable && <TestYourself lesson={lesson} />}
+      {PRACTICE_ENABLED && !aiUnavailable && <TestYourself lesson={lesson} />}
       {lesson.mastery_score >= 0.8 && <LectureVideos lectureId={lesson.id} />}
     </article>
   )

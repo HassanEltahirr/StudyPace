@@ -7,6 +7,7 @@ primary_region = "iad"
   PORT = "8080"
   STUDYPACE_ENV = "production"
   STUDYPACE_LOCAL_ADMIN_ENABLED = "false"
+  STUDYPACE_PRACTICE_ENABLED = "false"
   STUDYPACE_DATA_DIR = "/app/backend/data"
   STUDYPACE_STATIC_DIR = "/app/frontend-dist"
 
@@ -19,8 +20,8 @@ primary_region = "iad"
 
   [http_service.concurrency]
     type = "connections"
-    hard_limit = 120
-    soft_limit = 100
+    hard_limit = 250
+    soft_limit = 150
 
 [[vm]]
   memory = "1024mb"

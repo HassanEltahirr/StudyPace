@@ -10,8 +10,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from sqlalchemy import text
+
 from config import local_admin_enabled
-from database import SessionLocal, prime_workspace
+from database import IS_POSTGRES, SessionLocal, prime_workspace
 from models import User
 from services.auth_utils import create_token, hash_password, require_auth, verify_password
 from services.emailer import send_password_reset_email
@@ -50,8 +52,19 @@ USERNAME_RE = re.compile(r"^[a-z0-9_.@-]{3,80}$")
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
-def get_auth_db():
+def _auth_session() -> Session:
+    """Auth always reads/writes the global users table in `public`. Pin the
+    schema explicitly — otherwise the Supabase transaction pooler hands back a
+    backend whose search_path was left on some user's workspace schema, and
+    register/login land in the wrong schema (accounts silently go missing)."""
     db = SessionLocal()
+    if IS_POSTGRES:
+        db.execute(text("SET search_path TO public"))
+    return db
+
+
+def get_auth_db():
+    db = _auth_session()
     try:
         yield db
     finally:
@@ -219,7 +232,7 @@ def me(username: str = Depends(require_auth)):
     cached = get_cached(key)
     if cached is not None:
         return cached
-    db = SessionLocal()
+    db = _auth_session()
     try:
         user = db.query(User).filter(User.username == username).first()
     finally:

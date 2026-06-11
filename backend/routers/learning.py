@@ -360,6 +360,11 @@ def upload_lecture(course_id: int, payload: LectureUpload, db: Session = Depends
         _award_badge(db, "first_upload", "First upload", "Created a lesson from local slide content.")
 
         lecture_id = lecture.id
+        # Build the response while still inside this insert transaction. After
+        # commit the Supabase transaction pooler can route the next query to a
+        # backend that doesn't have our per-user search_path set, so re-reading
+        # the workspace schema came back empty and 500'd on the None lecture.
+        response = _lesson_detail(lecture)
         db.commit()
     except Exception as exc:
         db.rollback()
@@ -369,10 +374,8 @@ def upload_lecture(course_id: int, payload: LectureUpload, db: Session = Depends
             "StudyPace could read this file, but saving the lesson failed. Restart the backend and try again.",
         ) from exc
     clear_workspace_cache()
-    db.expire_all()
     _generate_ai_summary_in_background(lecture_id)
-    lecture = db.query(Lecture).filter(Lecture.id == lecture_id).first()
-    return _lesson_detail(lecture)
+    return response
 
 
 @router.get("/lectures/{lecture_id}", response_model=LessonOut)
@@ -944,19 +947,20 @@ def submit_lesson_quiz(lecture_id: int, payload: LessonQuizSubmission, db: Sessi
 
     xp = correct_count * 10 + (25 if score >= 0.8 else 0)
     lecture_id = lecture.id
+    # Read what the response needs before commit — see upload_lecture: the
+    # transaction pooler can drop our search_path on the next transaction.
+    mastery_score = lecture.mastery_score
     db.commit()
     clear_workspace_cache()
-    db.expire_all()
-    lecture = db.query(Lecture).filter(Lecture.id == lecture_id).first()
 
     return LessonQuizResult(
-        lecture_id=lecture.id,
+        lecture_id=lecture_id,
         score=round(score, 2),
         correct=correct_count,
         total=total,
-        mastery_score=lecture.mastery_score,
+        mastery_score=mastery_score,
         xp_earned=xp,
-        unlocked_next=lecture.mastery_score >= 0.8,
+        unlocked_next=mastery_score >= 0.8,
         per_question=per_question,
     )
 
